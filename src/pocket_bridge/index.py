@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings
-from .storage import client_from_path, iter_markdown, meta_dir, parse_markdown
+from .storage import iter_markdown, location_from_path, meta_dir, parse_markdown
 
 _lock = threading.Lock()
 
@@ -23,12 +23,14 @@ CREATE TABLE IF NOT EXISTS recordings (
   path TEXT NOT NULL,
   mtime REAL NOT NULL,
   client TEXT,
+  project TEXT,
   title TEXT,
   date TEXT,
   duration_minutes INTEGER,
   tags TEXT,
   summary TEXT,
-  open_actions INTEGER DEFAULT 0
+  open_actions INTEGER DEFAULT 0,
+  emb_mtime REAL DEFAULT 0
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
   pocket_id UNINDEXED, title, client, summary, transcript,
@@ -42,6 +44,7 @@ class Row:
     pocket_id: str
     path: str
     client: str | None
+    project: str | None
     title: str
     date: str
     duration_minutes: int | None
@@ -61,6 +64,11 @@ class Index:
         self.conn.row_factory = sqlite3.Row
         with _lock:
             self.conn.executescript(SCHEMA)
+            cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(recordings)")}
+            for col, decl in (("project", "TEXT"), ("emb_mtime", "REAL DEFAULT 0")):
+                if col not in cols:  # index created by an older version
+                    self.conn.execute(f"ALTER TABLE recordings ADD COLUMN {col} {decl}")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -72,21 +80,22 @@ class Index:
         if not parsed:
             return None
         pid = str(parsed.meta["pocket_id"])
-        client = client_from_path(self.settings, path)
+        client, project = location_from_path(self.settings, path)
         tags = parsed.meta.get("tags") or []
         with _lock, self.conn:
             self.conn.execute("DELETE FROM fts WHERE pocket_id = ?", (pid,))
             self.conn.execute(
-                """INSERT INTO recordings (pocket_id, path, mtime, client, title, date, duration_minutes, tags, summary, open_actions)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                """INSERT INTO recordings (pocket_id, path, mtime, client, project, title, date, duration_minutes, tags, summary, open_actions)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(pocket_id) DO UPDATE SET path=excluded.path, mtime=excluded.mtime, client=excluded.client,
-                     title=excluded.title, date=excluded.date, duration_minutes=excluded.duration_minutes,
+                     project=excluded.project, title=excluded.title, date=excluded.date, duration_minutes=excluded.duration_minutes,
                      tags=excluded.tags, summary=excluded.summary, open_actions=excluded.open_actions""",
                 (
                     pid,
                     str(path),
                     path.stat().st_mtime,
                     client,
+                    project,
                     parsed.title,
                     str(parsed.meta.get("date") or ""),
                     parsed.meta.get("duration_minutes"),
@@ -133,7 +142,7 @@ class Index:
     # -- Reading --------------------------------------------------------------
 
     def _rows(self, sql: str, params: tuple = ()) -> list[Row]:
-        cols = "pocket_id, path, client, title, date, duration_minutes, tags, summary, open_actions"
+        cols = "pocket_id, path, client, project, title, date, duration_minutes, tags, summary, open_actions"
         return [Row(**dict(r)) for r in self.conn.execute(sql.replace("{cols}", cols), params)]
 
     def get(self, pocket_id: str) -> Row | None:
@@ -151,13 +160,19 @@ class Index:
         rows = self._rows("SELECT {cols} FROM recordings WHERE title LIKE ? ORDER BY date DESC", (f"%{ref}%",))
         return rows[0] if len(rows) == 1 else None
 
-    def list(self, client: str | None = None, since: str = "", until: str = "", limit: int = 50, unsorted_only: bool = False) -> list[Row]:
+    def list(
+        self, client: str | None = None, since: str = "", until: str = "", limit: int = 50,
+        unsorted_only: bool = False, project: str | None = None,
+    ) -> list[Row]:
         where, params = [], []
         if unsorted_only:
             where.append("client IS NULL")
         elif client:
             where.append("client = ? COLLATE NOCASE")
             params.append(client)
+        if project:
+            where.append("project = ? COLLATE NOCASE")
+            params.append(project)
         if since:
             where.append("date >= ?")
             params.append(since)
@@ -173,7 +188,7 @@ class Index:
         fts_q = to_fts_query(query, any_word=any_word)
         if not fts_q:
             return []
-        sql = """SELECT r.pocket_id, r.path, r.client, r.title, r.date,
+        sql = """SELECT r.pocket_id, r.path, r.client, r.project, r.title, r.date, r.open_actions,
                         snippet(fts, 4, '**', '**', ' … ', 24) AS snippet
                  FROM fts JOIN recordings r ON r.pocket_id = fts.pocket_id
                  WHERE fts MATCH ?"""

@@ -1,15 +1,18 @@
-"""Markdown files on disk: one file per recording, one folder per client.
+"""Markdown files on disk: one file per recording, one folder per client (and project).
 
 Layout (Dutch defaults):
 
     <root>/
       Klanten/<Client>/<YYYY>/<YYYY-MM-DD HHMM> <title>.md
-      Klanten/<Client>/_Dossier.md
+      Klanten/<Client>/<Project>/<YYYY>/...            (recordings of a project)
+      Klanten/<Client>/_Dossier.md                     (generated overview)
+      Klanten/<Client>/_Briefings/, _Follow-ups/       (generated with Claude)
       _Ongesorteerd/<YYYY>/...
+      _Weekoverzichten/2026-W40.md
       .pocket-bridge/            (index, state, raw JSON; safe to delete)
 
-The folder a file lives in is the source of truth for its client, so users can
-simply drag files between client folders in Finder/Explorer.
+The folder a file lives in is the source of truth for its client and project,
+so users can simply drag files between folders in Finder/Explorer.
 """
 
 from __future__ import annotations
@@ -26,6 +29,9 @@ from .pocket_api import Recording
 
 _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+_YEAR = re.compile(r"^(\d{4}|onbekend|unknown)$")
+SPEAKER_LINE = re.compile(r"^\*\*(?P<name>[^*\n]+)\*\*(?P<rest>( \(\d\d:\d\d:\d\d\))?)$", re.M)
+ACTION_LINE = re.compile(r"^(?P<indent>\s*)- \[(?P<mark>[ xX])\] (?P<text>.+)$")
 
 
 def safe_name(name: str, max_len: int = 80) -> str:
@@ -44,24 +50,35 @@ def meta_dir(settings: Settings) -> Path:
     return d
 
 
-def client_dir(settings: Settings, client: str | None) -> Path:
+def client_dir(settings: Settings, client: str | None, project: str | None = None) -> Path:
     if client:
-        return settings.root / settings.clients_dirname / safe_name(client)
+        base = settings.root / settings.clients_dirname / safe_name(client)
+        return base / safe_name(project) if project else base
     return settings.root / settings.unsorted_dirname
 
 
-def client_from_path(settings: Settings, path: Path) -> str | None:
-    """Derive the client from where a file lives."""
+def location_from_path(settings: Settings, path: Path) -> tuple[str | None, str | None]:
+    """(client, project) derived from where a file lives."""
     try:
         rel = path.resolve().relative_to(settings.root.resolve())
     except ValueError:
-        return None
+        return None, None
     parts = rel.parts
-    if len(parts) >= 3 and parts[0] == settings.clients_dirname:
-        folder = parts[1]
-        known = next((c.name for c in settings.clients if safe_name(c.name) == folder), None)
-        return known or folder
-    return None
+    if len(parts) < 3 or parts[0] != settings.clients_dirname:
+        return None, None
+    folder = parts[1]
+    cfg = next((c for c in settings.clients if safe_name(c.name) == folder), None)
+    client = cfg.name if cfg else folder
+    project = None
+    if len(parts) >= 4 and not _YEAR.match(parts[2]) and not parts[2].startswith("_"):
+        project = parts[2]
+        if cfg:
+            project = next((p.name for p in cfg.projects if safe_name(p.name) == parts[2]), project)
+    return client, project
+
+
+def client_from_path(settings: Settings, path: Path) -> str | None:
+    return location_from_path(settings, path)[0]
 
 
 def recording_filename(rec: Recording) -> str:
@@ -69,9 +86,17 @@ def recording_filename(rec: Recording) -> str:
     return f"{stamp} {safe_name(rec.title, 70)}.md"
 
 
-def target_path(settings: Settings, rec: Recording, client: str | None) -> Path:
-    year = rec.recorded_at.astimezone().strftime("%Y") if rec.recorded_at else "onbekend"
-    return client_dir(settings, client) / year / recording_filename(rec)
+def year_of(rec: Recording) -> str:
+    return rec.recorded_at.astimezone().strftime("%Y") if rec.recorded_at else "onbekend"
+
+
+def target_path(settings: Settings, rec: Recording, client: str | None, project: str | None = None) -> Path:
+    return client_dir(settings, client, project if client else None) / year_of(rec) / recording_filename(rec)
+
+
+def demote_headings(markdown: str) -> str:
+    """Pocket summaries contain their own '## ' headings; push them below our section level."""
+    return re.sub(r"^(#{1,4}) ", lambda m: "#" * min(6, len(m.group(1)) + 2) + " ", markdown, flags=re.M)
 
 
 def _fmt_ts(seconds: float | None) -> str:
@@ -81,15 +106,30 @@ def _fmt_ts(seconds: float | None) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
-def render_markdown(settings: Settings, rec: Recording, client: str | None, client_source: str) -> str:
+def render_markdown(
+    settings: Settings,
+    rec: Recording,
+    client: str | None,
+    client_source: str,
+    project: str | None = None,
+    meeting: dict | None = None,
+    speakers: dict[str, str] | None = None,
+    done_actions: set[str] | None = None,
+) -> str:
+    """meeting: Event.as_dict(); speakers: {"Speaker 1": "Jan"}; done_actions: texts already ticked off."""
     lang = settings.language
+    speakers = speakers or {}
+    done_actions = done_actions or set()
     fm = {
         "pocket_id": rec.id,
         "title": rec.title,
         "date": rec.recorded_at.astimezone().isoformat(timespec="minutes") if rec.recorded_at else "",
         "duration_minutes": round(rec.duration_seconds / 60) if rec.duration_seconds else None,
         "client": client or "",
+        "project": project or "",
         "client_source": client_source,
+        "meeting": (meeting or {}).get("title", ""),
+        "attendees": (meeting or {}).get("attendees") or [],
         "tags": rec.tags,
         "recorded_by": rec.recorded_by,
         "language": rec.language,
@@ -98,7 +138,7 @@ def render_markdown(settings: Settings, rec: Recording, client: str | None, clie
     }
     lines = ["---"]
     for k, v in fm.items():
-        if (v is None or v == "") and k != "client":  # always keep client: it is edited later
+        if (v is None or v == "" or v == []) and k not in ("client", "project"):  # these two are edited later
             continue
         lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")  # JSON scalars/lists are valid YAML
     lines.append("---")
@@ -110,15 +150,22 @@ def render_markdown(settings: Settings, rec: Recording, client: str | None, clie
     if rec.duration_seconds:
         info.append(f"**{t(lang, 'duration')}:** {round(rec.duration_seconds / 60)} min")
     info.append(f"**{t(lang, 'client')}:** {'[[' + client + ']]' if client else t(lang, 'unsorted')}")
+    if project:
+        info.append(f"**{t(lang, 'project')}:** {project}")
     if rec.tags:
         info.append(f"**Tags:** {', '.join(rec.tags)}")
     lines.append(" · ".join(info))
+    if meeting:
+        lines.append("")
+        lines.append(f"**{t(lang, 'meeting')}:** {meeting.get('title', '')}")
+        if meeting.get("attendees"):
+            lines.append(f"**{t(lang, 'attendees')}:** {', '.join(meeting['attendees'])}")
     lines.append("")
     if rec.summary:
-        lines += [f"## {t(lang, 'summary')}", "", rec.summary.strip(), ""]
+        lines += [f"## {t(lang, 'summary')}", "", demote_headings(rec.summary.strip()), ""]
     if rec.action_items:
         lines += [f"## {t(lang, 'action_items')}", ""]
-        lines += [f"- [ ] {a}" for a in rec.action_items]
+        lines += [f"- [{'x' if a in done_actions else ' '}] {a}" for a in rec.action_items]
         lines.append("")
     lines += [f"## {t(lang, 'transcript')}", ""]
     if rec.segments:
@@ -127,7 +174,7 @@ def render_markdown(settings: Settings, rec: Recording, client: str | None, clie
             if seg.speaker and seg.speaker != prev_speaker:
                 ts = _fmt_ts(seg.start)
                 lines.append("")
-                lines.append(f"**{seg.speaker}**" + (f" ({ts})" if ts else ""))
+                lines.append(f"**{speakers.get(seg.speaker, seg.speaker)}**" + (f" ({ts})" if ts else ""))
                 prev_speaker = seg.speaker
             lines.append(seg.text)
     else:
@@ -148,13 +195,10 @@ class ParsedFile:
 
 
 _SECTION = re.compile(r"^## (.+)$", re.M)
+ACTION_HEADINGS = ("actiepunten", "action items")
 
 
-def parse_markdown(path: Path) -> ParsedFile | None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
+def split_frontmatter(text: str) -> tuple[dict, str]:
     meta: dict = {}
     body = text
     if text.startswith("---"):
@@ -170,6 +214,15 @@ def parse_markdown(path: Path) -> ParsedFile | None:
                 except json.JSONDecodeError:
                     meta[k.strip()] = v.strip("'\"")
             body = text[end + 4 :].lstrip("\n")
+    return meta, body
+
+
+def parse_markdown(path: Path) -> ParsedFile | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    meta, body = split_frontmatter(text)
     if "pocket_id" not in meta:
         return None
 
@@ -183,10 +236,10 @@ def parse_markdown(path: Path) -> ParsedFile | None:
         return next((sections[n] for n in names if n in sections), "")
 
     actions = []
-    for line in section("actiepunten", "action items").splitlines():
-        m = re.match(r"^\s*- \[([ xX])\] (.+)$", line)
+    for line in section(*ACTION_HEADINGS).splitlines():
+        m = ACTION_LINE.match(line)
         if m:
-            actions.append((m.group(1).lower() == "x", m.group(2).strip()))
+            actions.append((m.group("mark").lower() == "x", m.group("text").strip()))
     return ParsedFile(
         path=path,
         meta=meta,
@@ -198,24 +251,109 @@ def parse_markdown(path: Path) -> ParsedFile | None:
     )
 
 
-def set_frontmatter_client(path: Path, client: str | None, source: str) -> None:
+def set_location(path: Path, client: str | None, project: str | None, source: str) -> None:
+    """Update client/project in the front matter and the visible info line."""
     text = path.read_text(encoding="utf-8")
-    new_lines = []
-    in_fm = False
+    new_lines, in_fm, seen_project = [], False, False
     for i, line in enumerate(text.splitlines()):
         if i == 0 and line == "---":
             in_fm = True
         elif in_fm and line == "---":
+            if not seen_project:
+                new_lines.append(f"project: {json.dumps(project or '', ensure_ascii=False)}")
             in_fm = False
         elif in_fm and line.startswith("client:"):
             line = f"client: {json.dumps(client or '', ensure_ascii=False)}"
+        elif in_fm and line.startswith("project:"):
+            line = f"project: {json.dumps(project or '', ensure_ascii=False)}"
+            seen_project = True
         elif in_fm and line.startswith("client_source:"):
             line = f"client_source: {json.dumps(source)}"
         new_lines.append(line)
-    text = "\n".join(new_lines) + "\n"
-    # Update the visible client link in the info line too
-    text = re.sub(r"(\*\*(?:Klant|Client):\*\* )(\[\[[^\]]*\]\]|[^·\n]+)", lambda m: m.group(1) + (f"[[{client}]]" if client else "—"), text, count=1)
-    path.write_text(text, encoding="utf-8")
+    out = []
+    done = False
+    for line in new_lines:
+        if not done and re.search(r"\*\*(?:Klant|Client):\*\* ", line):
+            items = []
+            for item in line.split(" · "):
+                if item.startswith("**Project:**"):
+                    continue
+                m = re.match(r"(\*\*(?:Klant|Client):\*\* )", item)
+                if m:
+                    item = m.group(1) + (f"[[{client}]]" if client else "—")
+                    items.append(item)
+                    if project:
+                        items.append(f"**Project:** {project}")
+                    continue
+                items.append(item)
+            line = " · ".join(items)
+            done = True
+        out.append(line)
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+# Backwards compatible name
+def set_frontmatter_client(path: Path, client: str | None, source: str) -> None:
+    set_location(path, client, None, source)
+
+
+# -- Speakers -------------------------------------------------------------------
+
+
+def speakers_in(text: str) -> list[str]:
+    """Speaker labels in the transcript section, in order of first appearance."""
+    _, body = split_frontmatter(text)
+    idx = body.lower().find("## transcript")
+    body = body[idx:] if idx >= 0 else body
+    return list(dict.fromkeys(m.group("name").strip() for m in SPEAKER_LINE.finditer(body)))
+
+
+def rename_speakers_in_file(path: Path, mapping: dict[str, str]) -> int:
+    """Rename speaker headings in the transcript section. Returns number of headings changed."""
+    mapping = {k: v.strip() for k, v in mapping.items() if v and v.strip() and v.strip() != k}
+    if not mapping:
+        return 0
+    text = path.read_text(encoding="utf-8")
+    idx = text.lower().find("## transcript")
+    if idx < 0:
+        return 0
+    head, tail = text[:idx], text[idx:]
+    count = 0
+
+    def repl(m: re.Match) -> str:
+        nonlocal count
+        name = m.group("name").strip()
+        if name in mapping:
+            count += 1
+            return f"**{mapping[name]}**{m.group('rest')}"
+        return m.group(0)
+
+    tail = SPEAKER_LINE.sub(repl, tail)
+    path.write_text(head + tail, encoding="utf-8")
+    return count
+
+
+# -- Action items -----------------------------------------------------------------
+
+
+def set_action_done(path: Path, text: str, done: bool) -> bool:
+    """Tick or untick the action item with this text in the file's action items section."""
+    lines = path.read_text(encoding="utf-8").split("\n")
+    in_section, changed = False, False
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            in_section = line[3:].strip().lower() in ACTION_HEADINGS
+            continue
+        if not in_section:
+            continue
+        m = ACTION_LINE.match(line)
+        if m and m.group("text").strip() == text.strip():
+            lines[i] = f"{m.group('indent')}- [{'x' if done else ' '}] {m.group('text')}"
+            changed = True
+            break
+    if changed:
+        path.write_text("\n".join(lines), encoding="utf-8")
+    return changed
 
 
 def unique_path(path: Path) -> Path:
@@ -229,10 +367,17 @@ def unique_path(path: Path) -> Path:
 
 
 def iter_markdown(settings: Settings):
+    """All recording files (skips generated files and folders starting with '_')."""
     root = settings.root
     if not root.exists():
         return
     for p in root.rglob("*.md"):
-        if ".pocket-bridge" in p.parts or p.name.startswith("_"):
+        try:
+            rel = p.relative_to(root).parts
+        except ValueError:
+            continue
+        if ".pocket-bridge" in rel or p.name.startswith("_"):
+            continue
+        if any(part.startswith("_") and part != settings.unsorted_dirname for part in rel[:-1]):
             continue
         yield p

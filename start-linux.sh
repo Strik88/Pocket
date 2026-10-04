@@ -8,4 +8,4 @@ if ! command -v uv >/dev/null 2>&1; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 uv sync --quiet --python 3.12 || exit 1
-exec .venv/bin/python -m pocket_bridge web
+exec .venv/bin/python -m pocket_bridge tray

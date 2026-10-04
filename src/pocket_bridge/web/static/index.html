@@ -14,6 +14,8 @@
       <a href="#dashboard" data-view="dashboard" data-i18n="nav_dashboard">Overzicht</a>
       <a href="#clients" data-view="clients" data-i18n="nav_clients">Klanten</a>
       <a href="#recordings" data-view="recordings" data-i18n="nav_recordings">Opnames</a>
+      <a href="#actions" data-view="actions" data-i18n="nav_actions">Actiepunten</a>
+      <a href="#reports" data-view="reports" data-i18n="nav_reports">Rapporten</a>
       <a href="#ask" data-view="ask" data-i18n="nav_ask">Vraag Claude</a>
       <a href="#settings" data-view="settings" data-i18n="nav_settings">Instellingen</a>
       <a href="#setup" data-view="setup" data-i18n="nav_setup">Installatiehulp</a>
@@ -148,6 +150,37 @@
         </div>
       </section>
 
+      <!-- ACTIONS -->
+      <section id="view-actions" class="view">
+        <h1 data-i18n="nav_actions">Actiepunten</h1>
+        <p class="muted" data-i18n="actions_help">Alle actiepunten uit je gesprekken. Afvinken hier wordt opgeslagen in het gesprek zelf en in het klantdossier.</p>
+        <div class="row">
+          <select id="actClient"></select>
+          <label class="check inline"><input type="checkbox" id="actDone"> <span data-i18n="show_done">Toon afgevinkte</span></label>
+        </div>
+        <div id="actList" class="card"></div>
+      </section>
+
+      <!-- REPORTS -->
+      <section id="view-reports" class="view">
+        <h1 data-i18n="nav_reports">Rapporten</h1>
+        <div id="reportsAiNote" class="card warn hidden" data-i18n-html="reports_ai_note"></div>
+        <div class="grid2">
+          <div class="card">
+            <h2 data-i18n="briefing_title">Voorbereiding op een gesprek</h2>
+            <p class="muted" data-i18n="briefing_help">Claude leest het dossier en de laatste drie gesprekken en maakt een briefing: stand van zaken, open punten, mensen, risico's en voorstellen.</p>
+            <div class="row"><select id="briefClient"></select><button class="primary" id="briefBtn" data-i18n="make">Maken</button></div>
+          </div>
+          <div class="card">
+            <h2 data-i18n="weekly_title">Weekoverzicht</h2>
+            <p class="muted" data-i18n="weekly_help">Alle gesprekken van een week per klant, met samenvattingen en open actiepunten. Wordt elke vrijdagmiddag automatisch gemaakt.</p>
+            <div class="row"><input type="week" id="weekPick" placeholder="2026-W40"><button class="primary" id="weekBtn" data-i18n="make">Maken</button></div>
+            <label class="check"><input type="checkbox" id="weekAi" checked> <span data-i18n="weekly_ai">Met korte terugblik van Claude</span></label>
+          </div>
+        </div>
+        <div id="reportOut" class="card hidden"></div>
+      </section>
+
       <!-- ASK -->
       <section id="view-ask" class="view">
         <h1 data-i18n="nav_ask">Vraag Claude</h1>
@@ -185,6 +218,33 @@
           <label class="check"><input type="checkbox" id="aiCreate"> <span data-i18n="ai_create">Claude mag zelf nieuwe klanten (mappen) aanmaken</span></label>
           <label data-i18n="model">Claude-model</label>
           <input type="text" id="model">
+        </div>
+        <div class="card">
+          <h2 data-i18n="calendar">Agenda</h2>
+          <div class="muted" data-i18n-html="calendar_help"></div>
+          <label data-i18n="calendar_links">iCal-links (één per regel)</label>
+          <textarea id="calUrls" rows="3" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics"></textarea>
+          <div class="row"><button id="calTest" data-i18n="test">Testen</button></div>
+          <div class="msg" id="calMsg"></div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="claude_extra">Claude</h2>
+          <label class="check"><input type="checkbox" id="aiStatus"> <span data-i18n="ai_status">Houd per klant een ‘stand van zaken’ bij in het dossier</span></label>
+          <label class="check"><input type="checkbox" id="weeklyAuto"> <span data-i18n="weekly_auto">Maak elke vrijdagmiddag automatisch een weekoverzicht</span></label>
+          <p class="muted" data-i18n="ai_cost_note">Functies met Claude gebruiken je Anthropic API-key en kosten per gebruik een paar cent.</p>
+        </div>
+        <div class="card">
+          <h2 data-i18n="semantic">Zoeken op betekenis</h2>
+          <p class="muted" data-i18n="semantic_help">Vindt ook gesprekken waarin andere woorden zijn gebruikt (bijv. ‘betalingsachterstand’ bij de zoekvraag ‘facturen’). Het taalmodel (~220 MB) wordt één keer gedownload en draait daarna op je eigen computer.</p>
+          <label class="check"><input type="checkbox" id="semOn"> <span data-i18n="semantic_on">Zoeken op betekenis aanzetten</span></label>
+          <p class="muted small" id="semStatus"></p>
+          <div class="row"><button id="semBuild" data-i18n="semantic_build">Index nu bijwerken</button></div>
+          <pre class="log hidden" id="semLog"></pre>
+        </div>
+        <div class="card">
+          <h2 data-i18n="always_on">Altijd aan</h2>
+          <label class="check"><input type="checkbox" id="autoStart"> <span data-i18n="autostart">Start Pocket Bridge automatisch bij inloggen (met icoon in de menubalk/het systeemvak)</span></label>
+          <div class="msg" id="autoStartMsg"></div>
         </div>
         <div class="card">
           <h2 data-i18n="keys">Sleutels &amp; map</h2>

@@ -13,13 +13,29 @@ DEFAULT_POCKET_BASE_URL = "https://public.heypocketai.com/api/v1"
 DEFAULT_MODEL = "claude-opus-5-5"
 
 
+DEFAULT_EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+class Project(BaseModel):
+    """A project or engagement within a client; gets its own subfolder."""
+
+    name: str
+    keywords: list[str] = Field(default_factory=list)
+
+
 class Client(BaseModel):
     """A client (klant). Recordings that match these rules land in the client's folder."""
 
     name: str
     keywords: list[str] = Field(default_factory=list)  # words/names in title or transcript
     pocket_tags: list[str] = Field(default_factory=list)  # Pocket tag names that mean "this client"
+    email_domains: list[str] = Field(default_factory=list)  # e.g. acme.com; matched against meeting attendees
+    projects: list[Project] = Field(default_factory=list)
     notes: str = ""  # free text; also given to Claude when classifying
+
+    def find_project(self, name: str) -> Project | None:
+        low = name.strip().lower()
+        return next((p for p in self.projects if p.name.lower() == low), None)
 
 
 class Settings(BaseModel):
@@ -42,7 +58,19 @@ class Settings(BaseModel):
     claude_model: str = DEFAULT_MODEL
     ai_classify: bool = True
     ai_may_create_clients: bool = False
+    ai_client_status: bool = True  # Claude keeps a "current status" section in each dossier
     keyword_min_hits: int = 2
+
+    # Calendar: private iCal links (Google Calendar / Outlook) to match recordings to meetings
+    calendar_urls: list[str] = Field(default_factory=list)
+    calendar_margin_minutes: int = 15
+
+    # Reports
+    weekly_auto: bool = True  # write a weekly overview every Friday afternoon
+
+    # Search on meaning (local embedding model, downloaded on first use)
+    semantic_search: bool = False
+    embed_model: str = DEFAULT_EMBED_MODEL
 
     @property
     def root(self) -> Path:

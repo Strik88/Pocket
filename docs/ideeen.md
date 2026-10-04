@@ -1,30 +1,32 @@
 # Ideeën voor uitbreidingen
 
-Wat er in versie 0.1 zit: lokale sync, mappen en dossiers per klant, sorteren met regels en Claude, zoeken, vragen stellen in de app, MCP-server voor Claude Desktop/Code, automatisch synchroniseren, NL/EN.
+## Gebouwd in versie 0.2
 
-Mogelijke volgende stappen, grofweg van meeste naar minste waarde per moeite:
+- Voorbereidingsbriefing per klant (Claude)
+- Follow-up-mail na een gesprek, te openen in je mailprogramma
+- Weekoverzicht, automatisch elke vrijdagmiddag, met terugblik van Claude
+- Centrale actiepuntenlijst met afvinken (ook terug vanuit het dossier)
+- "Stand van zaken" per klant in het dossier, bijgehouden door Claude
+- Trefwoorden voorstellen na het handmatig verplaatsen van een opname
+- Agenda-koppeling via een geheime iCal-link (Google Agenda, Outlook), met e-maildomeinen per klant
+- Projecten binnen klanten, met eigen submappen
+- Sprekers een naam geven, handmatig of door Claude, en onthouden bij updates
+- Zoeken op betekenis met een lokaal meertalig taalmodel
+- Antwoorden die live verschijnen, met bronverwijzingen per zin
+- Icoon in menubalk/systeemvak en automatisch starten bij inloggen
 
-## Werkstroom
-- **Voorbereidingsbriefing per klant**: één knop die vóór een afspraak een briefing maakt uit het dossier en de laatste gesprekken.
-- **Follow-up-mail na elk gesprek**: automatisch een conceptmail met samenvatting en afspraken, klaar om te versturen (bijv. als concept in Gmail).
-- **Weekoverzicht**: elke vrijdag een Markdown-bestand met alle gesprekken van de week per klant, beslissingen en actiepunten.
-- **Actiepunten synchroniseren** met een takenlijst (Todoist, Things, Microsoft To Do, Notion) en afvinken in beide richtingen.
-- **AI-samenvatting in het dossier**: "stand van zaken" per klant die Claude bij elk nieuw gesprek bijwerkt.
+## Bewust (nog) niet gebouwd
 
-## Sorteren
-- **Leren van verplaatsingen**: als je een opname handmatig verplaatst, stelt het systeem voor om trefwoorden aan die klant toe te voegen.
-- **Agenda-koppeling**: klant bepalen aan de hand van de agenda-afspraak op het moment van opnemen (Google/Outlook), inclusief deelnemers.
-- **Projecten binnen klanten**: submappen per project of traject.
-- **Sprekers herkennen**: "Spreker 1" vervangen door echte namen per klant.
+- **Koppeling met een takenapp** (Todoist, Microsoft To Do, Notion). Gekozen voor een centrale lijst in de app zelf. Todoist is het makkelijkst toe te voegen (alleen een API-token).
+- **Agenda via inloggen met Google/Microsoft** in plaats van een iCal-link. Netter, maar vereist dat elke gebruiker een eigen Google Cloud- en Azure-app aanmaakt.
+- **Echte installers** (.dmg / .exe). Zonder betaald ontwikkelaarscertificaat geven Mac en Windows bij het openen een waarschuwing; de startscripts werken even makkelijk.
+- **Pocket-webhooks** voor opnames binnen seconden. Vereist een publiek bereikbaar adres; synchroniseren elke paar minuten is in de praktijk bijna even snel.
+- **Export naar Word/PDF** van dossiers en briefings.
+- **Teamversie**: meerdere Pocket-accounts in één gedeelde map.
 
-## Zoeken en vragen
-- **Semantisch zoeken** (op betekenis in plaats van woorden) met lokale embeddings.
-- **Antwoorden streamen** in de app, zodat je het antwoord ziet verschijnen.
-- **Bronverwijzingen op zinsniveau** met de citations-functie van de Claude API.
+## Verdere ideeën
 
-## Delen en installeren
-- **Echte installers** (.dmg / .exe) en een icoon in de menubalk/systeemvak met een "synchroniseren"-knop.
-- **Automatisch starten bij inloggen**, zodat sync ook draait zonder dat Claude of de app open is.
-- **Pocket-webhooks** (`summary.completed`) zodat opnames binnen seconden binnenkomen; vereist een publiek bereikbare URL (bijv. via een kleine cloudfunctie).
-- **Export** van een klantdossier naar PDF of Word voor de klant zelf.
-- **Teamversie**: gedeelde map (SharePoint, Google Drive) met meerdere Pocket-accounts.
+- Briefing automatisch klaarzetten de ochtend vóór een afspraak (de agenda is al gekoppeld).
+- Follow-up-mail direct als concept in Gmail of Outlook zetten.
+- Per klant een vaste lijst "mensen" bijhouden, zodat sprekers vanzelf herkend worden.
+- Signaleren als een klant al lang niet gesproken is, of als actiepunten blijven liggen.

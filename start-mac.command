@@ -11,4 +11,15 @@ fi
 
 echo "Pocket Bridge voorbereiden… (de eerste keer duurt dit ongeveer een minuut)"
 uv sync --quiet --python 3.12 || { echo "Installatie mislukt / install failed."; read -r -p "Druk op Enter…"; exit 1; }
-exec .venv/bin/python -m pocket_bridge web
+nohup .venv/bin/python -m pocket_bridge tray >/dev/null 2>&1 &
+PID=$!
+sleep 4
+if kill -0 "$PID" 2>/dev/null || [ -f "$HOME/.pocket-bridge/instance.json" ]; then
+  echo ""
+  echo "Pocket Bridge draait. Je vindt het oranje rondje in de menubalk."
+  echo "Pocket Bridge is running. Look for the orange dot in the menu bar."
+  echo "Je kunt dit venster sluiten. / You can close this window."
+else
+  echo "Starten mislukt. Zie ~/.pocket-bridge/pocket-bridge.log / Start failed, see the log."
+  read -r -p "Druk op Enter…"
+fi

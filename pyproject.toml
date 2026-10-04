@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pocket-bridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Sync Pocket recordings to local Markdown, organised per client, and talk to them with Claude via MCP."
 readme = "README.md"
 license = "MIT"
@@ -16,6 +16,12 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn>=0.30",
   "pydantic>=2.7",
+  "icalendar>=6",
+  "recurring-ical-events>=3",
+  "numpy>=1.26",
+  "fastembed>=0.5",
+  "pystray>=0.19",
+  "pillow>=10",
 ]
 
 [project.optional-dependencies]

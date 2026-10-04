@@ -3,6 +3,9 @@
 Runs over stdio. Claude Desktop starts it automatically once it is registered
 (see claude_connect.py). While it runs, it also keeps syncing in the background
 when auto-sync is on, so new recordings show up without opening the web app.
+
+Claude itself does the writing (briefings, follow-ups, summaries) in the chat;
+these tools hand it the right material. No Anthropic API key is needed here.
 """
 
 from __future__ import annotations
@@ -13,16 +16,17 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
+from . import reports, semantic
 from . import sync as syncmod
-from .config import Client, load_settings, save_settings
+from .config import Client, Project, load_settings, save_settings
 from .dossier import DOSSIER_NAME
 from .index import Index
-from .storage import client_dir
+from .storage import client_dir, parse_markdown, speakers_in
 
-INSTRUCTIONS = """Tools for the user's Pocket recordings (meeting transcripts), stored locally as Markdown and organised per client.
+INSTRUCTIONS = """Tools for the user's Pocket recordings (meeting transcripts), stored locally as Markdown and organised per client (and project).
 Typical flow: list_clients or search_transcripts to find conversations, then get_transcript for the full text.
-Use get_client_dossier for a client overview with open action items. Recordings are referenced by Pocket id or title.
-Always mention the title and date of the conversations you base an answer on."""
+get_client_dossier gives a client overview with status and open action items. Recordings are referenced by Pocket id or title.
+Always mention the title and date of the conversations you base an answer on. Ask before moving recordings or ticking off action items."""
 
 server = MCPServer(name="pocket-transcripts", instructions=INSTRUCTIONS)
 
@@ -37,7 +41,11 @@ def _index() -> tuple:
 def _fmt_row(r) -> str:
     extra = f" · {r.duration_minutes} min" if r.duration_minutes else ""
     acts = f" · {r.open_actions} open" if r.open_actions else ""
-    return f"- {(r.date or '')[:16].replace('T', ' ')} · **{r.title}** · {r.client or '(ongesorteerd/unsorted)'}{extra}{acts} · id `{r.pocket_id}`"
+    proj = f" / {r.project}" if r.project else ""
+    return f"- {(r.date or '')[:16].replace('T', ' ')} · **{r.title}** · {r.client or '(unsorted)'}{proj}{extra}{acts} · id `{r.pocket_id}`"
+
+
+# -- Tools ----------------------------------------------------------------------------
 
 
 @server.tool()
@@ -51,6 +59,8 @@ def status() -> str:
             f"Pocket connected: {'yes' if settings.pocket_ready else 'NO - open the Pocket Bridge app to add your API key'}",
             f"Folder: {settings.root}",
             f"Clients configured: {len(settings.clients)}",
+            f"Calendar links: {len(settings.calendar_urls)}",
+            f"Search on meaning: {'on' if settings.semantic_search else 'off'}",
             f"Auto-sync: {'on' if settings.auto_sync else 'off'} (every {settings.sync_interval_minutes} min)",
             f"Last sync: {(state or {}).get('last_sync') or 'never'} — {last.get('message', '')}",
         ]
@@ -59,7 +69,7 @@ def status() -> str:
 
 @server.tool()
 def list_clients() -> str:
-    """List all clients with number of conversations, last contact date and open action items."""
+    """List all clients with projects, number of conversations, last contact date and open action items."""
     settings, idx = _index()
     try:
         stats = {s["client"]: s for s in idx.client_stats()}
@@ -67,7 +77,9 @@ def list_clients() -> str:
         names = [c.name for c in settings.clients] + [n for n in stats if n and not settings.find_client(n)]
         for name in names:
             s = stats.get(name, {})
-            lines.append(f"- **{name}**: {s.get('recordings', 0)} gesprekken/conversations, last {(s.get('last_date') or '-')[:10]}, {s.get('open_actions') or 0} open actions")
+            cfg = settings.find_client(name)
+            projects = f" · projects: {', '.join(p.name for p in cfg.projects)}" if cfg and cfg.projects else ""
+            lines.append(f"- **{name}**: {s.get('recordings', 0)} conversations, last {(s.get('last_date') or '-')[:10]}, {s.get('open_actions') or 0} open actions{projects}")
         if None in stats:
             lines.append(f"- _(unsorted)_: {stats[None]['recordings']} conversations")
         return "\n".join(lines) or "No clients yet."
@@ -76,11 +88,11 @@ def list_clients() -> str:
 
 
 @server.tool()
-def list_recordings(client: str = "", since: str = "", until: str = "", limit: int = 30, unsorted_only: bool = False) -> str:
-    """List recordings, newest first. Filter by client name, date range (YYYY-MM-DD) or only unsorted ones."""
+def list_recordings(client: str = "", project: str = "", since: str = "", until: str = "", limit: int = 30, unsorted_only: bool = False) -> str:
+    """List recordings, newest first. Filter by client, project, date range (YYYY-MM-DD) or only unsorted ones."""
     _, idx = _index()
     try:
-        rows = idx.list(client=client or None, since=since, until=until, limit=limit, unsorted_only=unsorted_only)
+        rows = idx.list(client=client or None, project=project or None, since=since, until=until, limit=limit, unsorted_only=unsorted_only)
         return "\n".join(_fmt_row(r) for r in rows) or "No recordings found."
     finally:
         idx.close()
@@ -88,17 +100,15 @@ def list_recordings(client: str = "", since: str = "", until: str = "", limit: i
 
 @server.tool()
 def search_transcripts(query: str, client: str = "", limit: int = 10) -> str:
-    """Full-text search across titles, summaries and transcripts. Use "quotes" for exact phrases.
-    Returns matching conversations with a snippet. Optionally restrict to one client."""
-    _, idx = _index()
+    """Search titles, summaries and transcripts. Use "quotes" for exact phrases. When search on meaning is
+    enabled, also finds conversations that use different words for the same thing. Optionally one client."""
+    settings, idx = _index()
     try:
-        hits = idx.search(query, client=client or None, limit=limit)
-        if not hits:
-            hits = idx.search(query, client=client or None, limit=limit, any_word=True)
+        hits = semantic.hybrid_search(settings, idx, query, client=client or None, limit=limit)
         if not hits:
             return "No matches. Try fewer or different words."
         return "\n".join(
-            f"- {(h['date'] or '')[:10]} · **{h['title']}** · {h['client'] or '(unsorted)'} · id `{h['pocket_id']}`\n  > {h['snippet']}"
+            f"- {(h['date'] or '')[:10]} · **{h['title']}** · {h['client'] or '(unsorted)'} · id `{h['pocket_id']}`\n  > {h.get('snippet', '')}"
             for h in hits
         )
     finally:
@@ -107,7 +117,7 @@ def search_transcripts(query: str, client: str = "", limit: int = 10) -> str:
 
 @server.tool()
 def get_transcript(recording: str) -> str:
-    """Full Markdown of one recording (summary, action items, transcript). Accepts Pocket id, exact title or a unique part of the title."""
+    """Full Markdown of one recording (meeting, attendees, summary, action items, transcript). Accepts Pocket id, exact title or a unique part of the title."""
     _, idx = _index()
     try:
         row = idx.find(recording)
@@ -120,7 +130,7 @@ def get_transcript(recording: str) -> str:
 
 @server.tool()
 def get_client_dossier(client: str) -> str:
-    """The client's dossier: number of conversations, last contact, open action items and a list of all conversations."""
+    """The client's dossier: status, number of conversations, last contact, open action items and all conversations (per project)."""
     settings = load_settings()
     known = settings.find_client(client)
     path = client_dir(settings, known.name if known else client) / DOSSIER_NAME
@@ -132,21 +142,64 @@ def get_client_dossier(client: str) -> str:
 @server.tool()
 def open_action_items(client: str = "") -> str:
     """All unchecked action items across conversations, optionally for one client."""
-    from .storage import parse_markdown
-
-    _, idx = _index()
+    settings, idx = _index()
     try:
-        out = []
-        for r in idx.list(client=client or None, limit=100_000):
-            if not r.open_actions:
-                continue
-            parsed = parse_markdown(Path(r.path))
-            for done, text in parsed.action_items if parsed else []:
-                if not done:
-                    out.append(f"- [ ] {text} — {r.title} ({(r.date or '')[:10]}, {r.client or 'unsorted'})")
-        return "\n".join(out) or "No open action items."
+        items = reports.list_actions(settings, idx, client or None)
+        return "\n".join(f"- [ ] {a['text']} — {a['title']} ({a['date']}, {a['client'] or 'unsorted'}) · id `{a['pocket_id']}`" for a in items) or "No open action items."
     finally:
         idx.close()
+
+
+@server.tool()
+def complete_action_item(recording: str, text: str, done: bool = True) -> str:
+    """Tick off (or reopen with done=False) an action item. text must match the item as listed by open_action_items."""
+    settings, idx = _index()
+    try:
+        row = idx.find(recording)
+        if not row:
+            return f"Recording not found: {recording}"
+        ok = reports.set_action(settings, idx, row.pocket_id, text, done)
+        return "Updated." if ok else "Action item not found; copy the exact text from open_action_items."
+    finally:
+        idx.close()
+
+
+@server.tool()
+def weekly_overview(week: str = "") -> str:
+    """All conversations of a week per client, with summaries and open action items. week like 2026-W40 (empty = this week).
+    Also saved as a Markdown file. Summarise it yourself for the user."""
+    settings, idx = _index()
+    try:
+        _, text = reports.weekly_overview(settings, idx, week, with_ai=False)
+        return text
+    finally:
+        idx.close()
+
+
+@server.tool()
+def get_speakers(recording: str) -> str:
+    """Speaker labels used in a recording's transcript (e.g. 'Speaker 1'), plus calendar attendees if known."""
+    _, idx = _index()
+    try:
+        row = idx.find(recording)
+        if not row:
+            return f"Recording not found: {recording}"
+        text = Path(row.path).read_text(encoding="utf-8")
+        parsed = parse_markdown(Path(row.path))
+        attendees = (parsed.meta.get("attendees") if parsed else None) or []
+        return f"Speakers: {', '.join(speakers_in(text)) or '-'}\nAttendees: {', '.join(attendees) or '-'}"
+    finally:
+        idx.close()
+
+
+@server.tool()
+def rename_speakers(recording: str, mapping: dict[str, str]) -> str:
+    """Replace speaker labels with real names, e.g. {"Speaker 1": "Jan de Vries"}. Remembered for future updates from Pocket."""
+    try:
+        n = syncmod.rename_speakers(load_settings(), recording, mapping)
+    except ValueError as exc:
+        return str(exc)
+    return f"Renamed {n} speaker headings."
 
 
 @server.tool()
@@ -156,29 +209,84 @@ def sync_now(full: bool = False) -> str:
 
 
 @server.tool()
-def assign_recording(recording: str, client: str) -> str:
-    """Move a recording to a client's folder (creates the client if new). Use client="" to move it to Unsorted."""
+def assign_recording(recording: str, client: str, project: str = "") -> str:
+    """Move a recording to a client's (project) folder; creates the client/project if new. Use client="" for Unsorted.
+    Returns suggested keywords that would sort similar recordings automatically next time."""
+    settings = load_settings()
     try:
-        path = syncmod.assign(load_settings(), recording, client or None)
+        path = syncmod.assign(settings, recording, client or None, project or None)
     except ValueError as exc:
         return str(exc)
-    return f"Moved to {path}"
+    msg = f"Moved to {path}"
+    if client:
+        settings, idx = _index()
+        try:
+            sugg = reports.suggest_keywords(settings, idx, recording, client)
+        finally:
+            idx.close()
+        if sugg:
+            msg += f"\nSuggested keywords for {client}: {', '.join(sugg)} (ask the user, then use add_client to add them)"
+    return msg
 
 
 @server.tool()
-def add_client(name: str, keywords: list[str] | None = None, pocket_tags: list[str] | None = None, notes: str = "") -> str:
-    """Add a client, or update its keywords/tags/notes. Keywords (names, company, project) are used to sort new recordings."""
+def add_client(
+    name: str,
+    keywords: list[str] | None = None,
+    pocket_tags: list[str] | None = None,
+    email_domains: list[str] | None = None,
+    projects: list[str] | None = None,
+    notes: str = "",
+) -> str:
+    """Add a client, or extend its keywords / Pocket tags / e-mail domains (e.g. acme.com) / projects / notes.
+    These rules sort new recordings automatically."""
     settings = load_settings()
-    existing = settings.find_client(name)
-    if existing:
-        existing.keywords = sorted(set(existing.keywords) | set(keywords or []))
-        existing.pocket_tags = sorted(set(existing.pocket_tags) | set(pocket_tags or []))
-        if notes:
-            existing.notes = notes
-    else:
-        settings.clients.append(Client(name=name.strip(), keywords=keywords or [], pocket_tags=pocket_tags or [], notes=notes))
+    c = settings.find_client(name)
+    if not c:
+        c = Client(name=name.strip())
+        settings.clients.append(c)
+    c.keywords = sorted(set(c.keywords) | set(keywords or []))
+    c.pocket_tags = sorted(set(c.pocket_tags) | set(pocket_tags or []))
+    c.email_domains = sorted(set(c.email_domains) | {d.lower().lstrip("@") for d in email_domains or []})
+    for p in projects or []:
+        if not c.find_project(p):
+            c.projects.append(Project(name=p.strip()))
+    if notes:
+        c.notes = notes
     save_settings(settings)
-    return f"Client '{name}' saved. Note: existing recordings are not moved automatically; use assign_recording."
+    return f"Client '{name}' saved. Existing recordings are not moved automatically; use assign_recording."
+
+
+# -- Prompts (ready-made tasks in Claude's prompt menu) ------------------------------------
+
+
+@server.prompt(title="Voorbereiding klant / Meeting prep")
+def voorbereiding(client: str) -> str:
+    """Briefing before a meeting with a client."""
+    return (
+        f"Bereid me voor op mijn volgende gesprek met {client}. Gebruik get_client_dossier en lees de laatste drie gesprekken "
+        "met get_transcript. Geef: stand van zaken in 3-5 punten, open actiepunten (wie, wanneer), betrokken personen en wat voor hen "
+        "belangrijk is, risico's, en drie voorstellen voor doelen of vragen voor het gesprek. Noem bij belangrijke punten het gesprek (titel, datum)."
+    )
+
+
+@server.prompt(title="Follow-up-mail")
+def follow_up(recording: str) -> str:
+    """Draft a follow-up e-mail after a conversation."""
+    return (
+        f"Lees het gesprek '{recording}' met get_transcript en schrijf een follow-up-mail: kort, vriendelijk, concreet. "
+        "Opbouw: bedankje, korte samenvatting, afspraken en besluiten, actiepunten met eigenaar, volgende stap. "
+        "Gebruik de deelnemers uit de agenda als ontvangers als die er staan. Alleen wat in het gesprek staat."
+    )
+
+
+@server.prompt(title="Weekoverzicht / Weekly review")
+def weekoverzicht(week: str = "") -> str:
+    """Review of a week's conversations."""
+    return (
+        f"Haal met weekly_overview het overzicht op van week {week or 'deze week'} en schrijf een korte terugblik per klant: "
+        "belangrijkste ontwikkelingen, besluiten en wat volgende week aandacht nodig heeft. Sluit af met alle open actiepunten."
+    )
 
 
 def main() -> None:

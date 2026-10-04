@@ -1,51 +1,44 @@
 # Pocket Bridge
 
-**Bring your Pocket recordings to your own computer, organised per client automatically, and talk to them with Claude.**
+**Bring your Pocket recordings to your own computer, organised per client and project automatically, and work with them together with Claude.**
 
 [Nederlandse versie → README.md](README.md)
 
-Pocket Bridge is a small local app that:
+Pocket Bridge runs on your own computer and:
 
 1. **connects to Pocket** through the official Pocket API (your API key);
-2. **downloads every transcript** as a clean Markdown file into a folder on your computer;
-3. **creates a folder per client** and files each recording automatically: first by your rules (keywords, Pocket tags), optionally with Claude when the rules find nothing;
-4. **keeps a dossier per client** (`_Dossier.md`) with all conversations, last contact and open action items;
-5. **gives Claude access** to all transcripts through a local MCP server, so in Claude Desktop or Claude Code you can ask: *"What did we agree with Acme last month?"*
+2. **downloads every transcript** as a clean Markdown file with summary, action items, speakers and, if you connect your calendar, the matching meeting and attendees;
+3. **creates a folder per client and project** and files each recording automatically, using your rules, your calendar and optionally Claude;
+4. **keeps a dossier per client** with current status, all conversations and open action items;
+5. **takes work off your hands**: one list of all action items, a briefing before a meeting, a follow-up e-mail after one, and a weekly overview every Friday;
+6. **gives Claude access** to all transcripts, in the app itself and in Claude Desktop or Claude Code, with citations to the conversation an answer comes from.
 
-Everything runs locally. Your transcripts and keys stay on your machine.
+Everything runs locally. Your transcripts, calendar link and keys stay on your machine.
 
 ![Dashboard](docs/img/dashboard.png)
 
 ## Quick start
 
-1. **Download**: on GitHub click **Code → Download ZIP**, unzip, and move the folder somewhere permanent such as your home folder (not Downloads: Claude Desktop will start the app from here).
-2. **Start**: double-click **`start-mac.command`** (Mac) or **`start-windows.bat`** (Windows). The first run installs [uv](https://docs.astral.sh/uv/) (it manages Python for you) and the dependencies, which takes about a minute. Your browser then opens **http://127.0.0.1:8765**.
+1. **Download**: on GitHub click **Code → Download ZIP**, unzip, and move the folder somewhere permanent such as your home folder (not Downloads).
+2. **Start**: double-click **`start-mac.command`** (Mac) or **`start-windows.bat`** (Windows). The first run installs [uv](https://docs.astral.sh/uv/) (it manages Python for you) and the dependencies, which takes a few minutes. Your browser then opens **http://127.0.0.1:8765** and an **orange dot appears in the menu bar** (Mac) or **an icon in the system tray** (Windows), with *Open*, *Sync now*, *Start at login* and *Quit*. You can close the terminal window.
    - Mac says it can't be opened? Right-click → **Open** → **Open**, or run `chmod +x start-mac.command`.
    - Windows SmartScreen? **More info → Run anyway**.
-3. **Follow the setup guide** (switch to EN at the bottom left):
-   1. Pocket: *Settings → Developer → API Keys*, create a key (`pk_…`), paste, *Test & save*.
-   2. Choose the folder for your transcripts.
-   3. Add clients with keywords (company, contact names, project names).
-   4. Optional: an Anthropic API key for smart sorting and asking questions in the app.
-   5. Connect Claude Desktop with one click, then restart Claude Desktop.
+3. **Follow the setup guide** (switch to EN at the bottom left): Pocket API key (*Settings → Developer → API Keys* in Pocket), folder, clients, optional Anthropic API key, connect Claude Desktop. Then under **Settings** connect your calendar, turn on search on meaning and choose whether to start at login.
 
-Click **Sync now** and your recordings appear.
+## Features
 
-## On disk
+- **Folders per client and project**: `Clients/<Client>/[<Project>/]<year>/…md`, plus `_Dossier.md`, `_Briefings/` and `_Follow-ups/` per client and `_Weekly/` at the top. Drag files between folders and Pocket Bridge follows; after a move it **suggests keywords** so similar recordings are filed automatically next time.
+- **Calendar**: paste your calendar's secret iCal link (Google Calendar: *Settings → your calendar → Secret address in iCal format*; Outlook: *Settings → Calendar → Shared calendars → Publish a calendar*). Each recording is matched to the meeting at that time; title and attendees are added, and a client's **e-mail domain** (e.g. `acme.com`) files meetings with their people automatically.
+- **Action items**: one page with every open item, per client. Ticking is saved in the conversation and the dossier, survives updates from Pocket, and ticks made in `_Dossier.md` are carried back.
+- **Reports with Claude**: meeting prep briefing, follow-up e-mail (opens in your mail app), weekly overview (automatically every Friday afternoon; works without Claude too), and a "current status" note per client.
+- **Speakers**: rename "Speaker 1" to real names, or let Claude guess from the conversation and attendees. Remembered across updates.
+- **Search on meaning**: a multilingual model (~220 MB, downloaded once) runs locally and finds conversations that use different words, combined with keyword search.
+- **Ask Claude**: answers stream in as Claude writes, with numbered citations; hover for the quote, click to open the conversation.
+- **Always on**: start at login with the tray icon; a second start just opens the running app.
 
-```
-Pocket Transcripts/
-├── Clients/<Client>/_Dossier.md
-├── Clients/<Client>/2026/2026-09-01 0930 Kickoff.md
-├── _Unsorted/2026/...
-└── .pocket-bridge/      (index and cache)
-```
+## In Claude Desktop and Claude Code
 
-Each file has front-matter metadata, the summary, action items as a checklist and the full transcript with speakers and timestamps. Works in any editor and as an [Obsidian](https://obsidian.md) vault. Drag a file into another client folder and Pocket Bridge follows; your own notes under **Notes** in `_Dossier.md` are preserved.
-
-## In Claude
-
-Tools: `list_clients`, `list_recordings`, `search_transcripts`, `get_transcript`, `get_client_dossier`, `open_action_items`, `assign_recording`, `add_client`, `sync_now`, `status`. Suggested project instructions: [docs/claude-instructies.md](docs/claude-instructies.md).
+No Anthropic API key needed: Claude Desktop does the thinking. Tools: `list_clients`, `list_recordings`, `search_transcripts`, `get_transcript`, `get_client_dossier`, `open_action_items`, `complete_action_item`, `weekly_overview`, `get_speakers`, `rename_speakers`, `assign_recording`, `add_client`, `sync_now`, `status`. Ready-made prompts: *Meeting prep*, *Follow-up e-mail*, *Weekly review*. Suggested project instructions: [docs/claude-instructies.md](docs/claude-instructies.md).
 
 For Claude Code, the exact command is shown in step 5 of the setup guide:
 
@@ -53,24 +46,21 @@ For Claude Code, the exact command is shown in step 5 of the setup guide:
 claude mcp add pocket-transcripts --scope user -- /path/to/PocketBridge/.venv/bin/python -m pocket_bridge mcp
 ```
 
-Pocket's own MCP server (`https://public.heypocketai.com/mcp`) can be added alongside it as a custom connector.
-
 ## Sorting order (new recordings only)
 
-Pocket tag → keyword in title → keywords at least N× in summary/transcript (clear winner) → Claude (if enabled, only when confident) → `_Unsorted`.
-
-## Auto-sync
-
-Every 15 minutes (configurable) while the web app **or** Claude Desktop is open. From a terminal: `.venv/bin/python -m pocket_bridge sync [--full]`.
+Pocket tag → calendar meeting (attendee e-mail domain, or client name in the meeting title) → keyword in title → keywords at least N× in summary/transcript (clear winner) → Claude (if enabled, only when confident) → `_Unsorted`. Then a project within the client if its name/keywords appear.
 
 ## Privacy
 
-Keys live in your user folder (`~/.pocket-bridge/config.json`, or `%APPDATA%\PocketBridge\config.json` on Windows), never in this repository. The web page only listens on 127.0.0.1.
+Keys and the calendar link live in your user folder (`~/.pocket-bridge/config.json`, or `%APPDATA%\PocketBridge\config.json` on Windows), never in this repository. The web page only listens on 127.0.0.1. Search on meaning runs locally. Every Claude feature can be switched off.
+
+When Pocket updates a conversation the file is rewritten: ticked action items, speaker names, client and project are kept, but notes typed into the conversation file are not. Keep notes in `_Dossier.md` under **Notes**.
 
 ## Development
 
 ```bash
 uv sync --extra dev && uv run pytest
+uv run pocket-bridge tray      # web app + tray icon
 ```
 
 Not affiliated with Pocket or Anthropic. MIT licence.

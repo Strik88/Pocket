@@ -110,7 +110,7 @@ summary { cursor: pointer; color: var(--muted); }
 .tags { display: flex; flex-wrap: wrap; gap: .3rem; }
 .tag { background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: .1rem .55rem; font-size: .8rem; }
 .tag.pt { color: var(--accent); }
-.card-foot { margin-top: auto; padding-top: .4rem; flex-wrap: nowrap !important; }
+.card-foot { margin-top: auto; padding-top: .4rem; gap: .4rem; }
 .card-foot button { padding: .3rem .65rem; font-size: .85rem; }
 .card-foot a { white-space: nowrap; }
 
@@ -139,7 +139,32 @@ summary { cursor: pointer; color: var(--muted); }
 
 .toast { position: fixed; bottom: 1.2rem; right: 1.2rem; background: var(--text); color: var(--bg); padding: .7rem 1rem; border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.2); }
 
+.grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+.grid2 .card { margin-bottom: 1rem; }
+.card.soft { background: var(--soft); border-color: transparent; margin: .8rem 0; }
+.toolbar { margin: .8rem 0 0; }
+.speaker-label { min-width: 110px; font-weight: 600; font-size: .9rem; }
+.row + .row { margin-top: .4rem; }
+label.check.inline { margin: 0; white-space: nowrap; }
+ul.actions { list-style: none; padding: 0; margin: .2rem 0 1rem; }
+ul.actions li { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; padding: .45rem 0; border-bottom: 1px solid var(--line); }
+ul.actions li label { display: flex; gap: .55rem; align-items: baseline; font-weight: 400; margin: 0; }
+ul.actions li.done span { text-decoration: line-through; color: var(--muted); }
+ul.actions li a { white-space: nowrap; text-decoration: none; }
+#actList h3 { margin-top: .4rem; }
+.tag.pick { display: inline-flex; gap: .3rem; align-items: center; cursor: pointer; font-size: .9rem; }
+a.button { display: inline-block; text-decoration: none; padding: .5rem .9rem; border-radius: 8px; border: 1px solid var(--line); }
+a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+.cite { text-decoration: none; font-weight: 700; padding: 0 .1rem; }
+ol.sources { margin: .8rem 0 0; padding-left: 1.3rem; font-size: .85rem; }
+ol.sources li { margin-bottom: .35rem; }
+ol.sources .quote { color: var(--muted); font-style: italic; }
+.cursor { animation: blink 1s steps(2) infinite; color: var(--accent); }
+@keyframes blink { 50% { opacity: 0; } }
+textarea { margin-top: .3rem; }
+
 @media (max-width: 800px) {
+  .grid2 { grid-template-columns: 1fr; }
   .layout { flex-direction: column; }
   .sidebar { width: auto; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center; padding: .6rem 1rem; }
   .brand { margin: 0 1rem 0 0; }

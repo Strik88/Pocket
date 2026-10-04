@@ -61,14 +61,14 @@ def test_rules_win_before_ai(settings, monkeypatch):
 
     monkeypatch.setattr(ai, "classify", boom)
     settings.anthropic_api_key = "sk-test"
-    assert classify.classify(settings, parse_recording(RECORDINGS["rec_acme"]))[0] == "Acme"
+    assert classify.classify(settings, parse_recording(RECORDINGS["rec_acme"])).client == "Acme"
 
 
 def test_ai_fallback_used_when_rules_fail(settings, monkeypatch):
-    monkeypatch.setattr(ai, "classify", lambda s, r: ("Betafabriek", "ai"))
+    monkeypatch.setattr(ai, "classify", lambda s, r, m=None: ("Betafabriek", "ai"))
     settings.anthropic_api_key = "sk-test"
-    client, source = classify.classify(settings, parse_recording(RECORDINGS["rec_misc"]))
-    assert client == "Betafabriek" and source.startswith("claude")
+    d = classify.classify(settings, parse_recording(RECORDINGS["rec_misc"]))
+    assert d.client == "Betafabriek" and d.source.startswith("claude")
 
 
 def test_ask_streams_and_returns_text(settings, monkeypatch):
@@ -92,5 +92,8 @@ def test_ask_streams_and_returns_text(settings, monkeypatch):
     monkeypatch.setattr(ai, "make_client", lambda s: _client_with(handler))
     answer = ai.ask(settings, "Wat is er besproken?", [{"title": "Kickoff", "date": "2026-09-01", "client": "Acme", "text": "..."}])
     assert answer == "Q4-planning besproken."
-    assert seen["body"]["stream"] is True and seen["body"]["fallbacks"] == "default"
-    assert "<document" in seen["body"]["messages"][-1]["content"]
+    body = seen["body"]
+    assert body["stream"] is True and body["fallbacks"] == "default"
+    doc = body["messages"][-1]["content"][0]
+    assert doc["type"] == "document" and doc["citations"] == {"enabled": True}
+    assert doc["source"]["data"] == "..." and doc["title"] == "Kickoff (2026-09-01)"

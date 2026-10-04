@@ -14,5 +14,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-".venv\Scripts\python.exe" -m pocket_bridge web
-pause
+start "" ".venv\Scripts\pythonw.exe" -m pocket_bridge tray
+echo Pocket Bridge draait. Je vindt het icoon rechtsonder in het systeemvak.
+echo Pocket Bridge is running. Look for the icon in the system tray.
+timeout /t 6 >nul

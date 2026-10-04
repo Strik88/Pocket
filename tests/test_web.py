@@ -74,3 +74,66 @@ def test_index_page_served(settings):
     r = client().get("/")
     assert r.status_code == 200 and "Pocket Bridge" in r.text
     assert client().get("/static/app.js").status_code == 200
+
+
+def test_actions_endpoints(settings):
+    sync.run_sync(settings, transport=make_transport())
+    c = client()
+    items = c.get("/api/actions").json()["actions"]
+    assert len(items) == 2
+    c.post("/api/actions", json={"pocket_id": "rec_acme", "text": "Offerte sturen (Ian)", "done": True})
+    assert len(c.get("/api/actions").json()["actions"]) == 1
+    assert len(c.get("/api/actions?include_done=true").json()["actions"]) == 2
+
+
+def test_recording_detail_has_speakers_and_assign_suggests(settings):
+    sync.run_sync(settings, transport=make_transport())
+    c = client()
+    d = c.get("/api/recordings/rec_beta").json()
+    assert d["speakers"] == ["A", "B"] and d["actions"][0]["text"] == "Demo plannen"
+    assert c.post("/api/recordings/rec_beta/speakers", json={"mapping": {"A": "Anna"}}).json()["changed"] == 1
+    r = c.post("/api/recordings/rec_misc/assign", json={"client": "Acme", "project": "Intern"}).json()
+    assert "Intern" in r["path"] and isinstance(r["suggestions"], list)
+
+
+def test_weekly_endpoints(settings):
+    sync.run_sync(settings, transport=make_transport())
+    c = client()
+    r = c.post("/api/weekly", json={"week": "2026-W36", "ai": False}).json()
+    assert "Kickoff Acme" in r["markdown"]
+    assert c.get("/api/weekly?week=2026-W36").json()["markdown"] == r["markdown"]
+
+
+def test_calendar_urls_not_in_state(settings):
+    c = client()
+    c.post("/api/settings", json={"calendar_urls": ["https://cal.example.com/secret.ics", " "]})
+    st = c.get("/api/state").json()
+    assert "calendar_urls" not in st["settings"] and st["settings"]["calendar_count"] == 1
+    assert c.get("/api/calendar-urls").json()["urls"] == ["https://cal.example.com/secret.ics"]
+
+
+def test_ask_streams_sources_text_and_citations(settings, monkeypatch):
+    from pocket_bridge import ai
+
+    sync.run_sync(settings, transport=make_transport())
+    s = load_settings()
+    s.anthropic_api_key = "sk-test"
+    from pocket_bridge.config import save_settings
+
+    save_settings(s)
+
+    def fake_stream(settings, question, sources, history=None):
+        assert sources and sources[0]["pocket_id"] == "rec_beta"
+        yield {"type": "text", "text": "Facturatie loopt achter."}
+        yield {"type": "done", "blocks": [{"text": "Facturatie loopt achter.", "citations": [{"source": 0, "cited_text": "facturatie loopt achter"}]}]}
+
+    monkeypatch.setattr(ai, "ask_stream", fake_stream)
+    with client().stream("POST", "/api/ask", json={"question": "Hoe staat het met de facturatie?"}) as r:
+        events = [json.loads(line[6:]) for line in r.iter_lines() if line.startswith("data: ")]
+    assert [e["type"] for e in events] == ["sources", "text", "done"]
+    assert events[0]["sources"][0]["title"] == "Gesprek over facturen"
+    assert events[2]["blocks"][0]["citations"][0]["source"] == 0
+
+
+def test_ping(settings):
+    assert client().get("/api/ping").json()["app"] == "pocket-bridge"

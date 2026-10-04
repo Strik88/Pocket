@@ -41,6 +41,13 @@ def test_mcp_tools_over_stdio(settings):
                 assert "Klantdossier: Acme" in await call("get_client_dossier", client="acme")
                 assert "Moved" in await call("assign_recording", recording="rec_misc", client="Acme")
                 assert "Kickoff Acme" in await call("list_recordings", client="Acme")
-                assert "saved" in await call("add_client", name="Delta", keywords=["delta"])
+                assert "saved" in await call("add_client", name="Delta", keywords=["delta"], email_domains=["@Delta.nl"], projects=["Pilot"])
+                assert "Speakers: A, B" in await call("get_speakers", recording="rec_beta")
+                assert "Renamed 1" in await call("rename_speakers", recording="rec_beta", mapping={"A": "Anna"})
+                assert "Updated." == await call("complete_action_item", recording="rec_beta", text="Demo plannen")
+                assert "Demo plannen" not in await call("open_action_items")
+                assert "Weekoverzicht" in await call("weekly_overview", week="2026-W36")
+                prompts = {p.name for p in (await session.list_prompts()).prompts}
+                assert {"voorbereiding", "follow_up", "weekoverzicht"} <= prompts
 
     asyncio.run(run())

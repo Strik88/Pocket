@@ -16,12 +16,22 @@ from typing import Callable
 import httpx
 
 from . import classify as classifier
-from .config import Client, Settings, load_settings, save_settings
+from . import meetings
+from .config import Client, Project, Settings, load_settings, save_settings
 from .dossier import build_dossier, rebuild_all
 from .i18n import t
 from .index import Index
 from .pocket_api import PocketClient, Recording
-from .storage import client_dir, meta_dir, render_markdown, set_frontmatter_client, target_path, unique_path
+from .storage import (
+    client_dir,
+    meta_dir,
+    parse_markdown,
+    rename_speakers_in_file,
+    render_markdown,
+    set_location,
+    target_path,
+    unique_path,
+)
 
 log = logging.getLogger(__name__)
 _thread_lock = threading.Lock()
@@ -130,6 +140,7 @@ def run_sync(
 def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport) -> None:
     state = load_state(settings)
     known: dict = state.setdefault("recordings", {})
+    speakers: dict = state.setdefault("speakers", {})
     index = Index(settings)
     index.refresh()  # pick up files the user moved by hand
     touched_clients: set[str] = set()
@@ -167,21 +178,32 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport)
                     raw_dir.mkdir(exist_ok=True)
                     (raw_dir / f"{rid}.json").write_text(json.dumps(rec.raw, indent=1, ensure_ascii=False), encoding="utf-8")
 
+                meeting = meetings.match_event(settings, rec.recorded_at, rec.duration_seconds) if settings.calendar_urls else None
+                done_actions: set[str] = set()
                 if existing:
                     path = Path(existing.path)
-                    client = existing.client
+                    client, project = existing.client, existing.project
                     source = _current_source(path) or "kept"
+                    old = parse_markdown(path)
+                    done_actions = {text for done, text in (old.action_items if old else []) if done}
+                    if old and not meeting and old.meta.get("meeting"):
+                        meeting = {"title": old.meta.get("meeting"), "attendees": old.meta.get("attendees") or []}
                     result.updated += 1
                 else:
-                    client, source = classifier.classify(settings, rec)
+                    decision = classifier.classify(settings, rec, meeting)
+                    client, project, source = decision.client, decision.project, decision.source
                     if client and not settings.find_client(client):
                         settings.clients.append(Client(name=client))
                         save_settings(settings)
                         result.new_clients.append(client)
-                    path = unique_path(target_path(settings, rec, client))
+                    path = unique_path(target_path(settings, rec, client, project))
                     result.new += 1
+                meeting_dict = meeting.as_dict() if hasattr(meeting, "as_dict") else meeting
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(render_markdown(settings, rec, client, source), encoding="utf-8")
+                path.write_text(
+                    render_markdown(settings, rec, client, source, project, meeting_dict, speakers.get(rid), done_actions),
+                    encoding="utf-8",
+                )
                 index.upsert_file(path)
                 known[rid] = {"updated_at": updated or rec.updated_at, "synced_at": datetime.now().isoformat(timespec="seconds")}
                 if client:
@@ -192,15 +214,34 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport)
         result.errors.append(str(exc))
         result.message = str(exc)
 
-    for client in touched_clients:
-        build_dossier(settings, client, index.list(client=client, limit=100_000))
     state["last_sync"] = result.started if not result.message else state.get("last_sync", "")
     state["last_result"] = result.as_dict()
     save_state(settings, state)
+    after_change(settings, index, touched_clients, say)
     index.close()
     if not result.message:
         result.message = t(settings.language, "sync_done", new=result.new, updated=result.updated, pending=result.pending)
     say(result.message)
+
+
+def after_change(settings: Settings, index: Index, clients: set[str], say=lambda m: None) -> None:
+    """Refresh everything derived from the files: dossiers, Claude status notes, meaning index."""
+    from . import reports, semantic
+
+    for client in clients:
+        if settings.ai_client_status and settings.ai_ready:
+            try:
+                reports.update_client_status(settings, index, client)
+            except Exception as exc:  # optional extra; never fail a sync on it
+                log.warning("client status for %s failed: %s", client, exc)
+        build_dossier(settings, client, index.list(client=client, limit=100_000))
+    if settings.semantic_search:
+        try:
+            n = semantic.update(settings, index)
+            if n:
+                say(t(settings.language, "semantic_indexed", n=n))
+        except Exception as exc:
+            log.warning("semantic index update failed: %s", exc)
 
 
 def _current_source(path: Path) -> str:
@@ -213,11 +254,11 @@ def _current_source(path: Path) -> str:
     return ""
 
 
-# -- Manual re-assignment -----------------------------------------------------
+# -- Manual changes -------------------------------------------------------------
 
 
-def assign(settings: Settings, ref: str, client: str | None) -> Path:
-    """Move a recording to another client's folder (or to Unsorted with client=None)."""
+def assign(settings: Settings, ref: str, client: str | None, project: str | None = None) -> Path:
+    """Move a recording to another client's (project) folder, or to Unsorted with client=None."""
     index = Index(settings)
     try:
         index.refresh()
@@ -225,24 +266,55 @@ def assign(settings: Settings, ref: str, client: str | None) -> Path:
         if not row:
             raise ValueError(f"Opname niet gevonden / recording not found: {ref}")
         client = client.strip() if client else None
+        project = project.strip() if (project and client) else None
         if client:
-            known = settings.find_client(client)
-            if known:
-                client = known.name
-            else:
-                settings.clients.append(Client(name=client))
-                save_settings(settings)
+            cfg = settings.find_client(client)
+            if not cfg:
+                cfg = Client(name=client)
+                settings.clients.append(cfg)
+            client = cfg.name
+            if project:
+                p = cfg.find_project(project)
+                if p:
+                    project = p.name
+                else:
+                    cfg.projects.append(Project(name=project))
+            save_settings(settings)
         old_path = Path(row.path)
         year = old_path.parent.name
-        new_path = unique_path(client_dir(settings, client) / year / old_path.name) if old_path.parent != client_dir(settings, client) / year else old_path
+        target_dir = client_dir(settings, client, project) / year
+        new_path = old_path if old_path.parent == target_dir else unique_path(target_dir / old_path.name)
         new_path.parent.mkdir(parents=True, exist_ok=True)
         if new_path != old_path:
             shutil.move(str(old_path), str(new_path))
-        set_frontmatter_client(new_path, client, "manual")
+        set_location(new_path, client, project, "manual")
         index.upsert_file(new_path)
         for c in {row.client, client} - {None}:
             build_dossier(settings, c, index.list(client=c, limit=100_000))
         return new_path
+    finally:
+        index.close()
+
+
+def rename_speakers(settings: Settings, ref: str, mapping: dict[str, str]) -> int:
+    """Rename speakers in a recording; remembered for future updates from Pocket."""
+    index = Index(settings)
+    try:
+        row = index.find(ref)
+        if not row:
+            raise ValueError(f"Opname niet gevonden / recording not found: {ref}")
+        path = Path(row.path)
+        changed = rename_speakers_in_file(path, mapping)
+        state = load_state(settings)
+        stored = state.setdefault("speakers", {}).setdefault(row.pocket_id, {})
+        # Map original Pocket labels (keys of the stored map) through to the new names
+        reverse = {v: k for k, v in stored.items()}
+        for old, new in mapping.items():
+            if new and new.strip():
+                stored[reverse.get(old, old)] = new.strip()
+        save_state(settings, state)
+        index.upsert_file(path)
+        return changed
     finally:
         index.close()
 
@@ -289,4 +361,11 @@ class AutoSync:
                         self.on_result(res)
                 except Exception:  # never let the loop die
                     log.exception("auto-sync failed")
+            if settings.weekly_auto and settings.root.exists():
+                try:
+                    from . import reports
+
+                    reports.auto_weekly(settings)
+                except Exception:
+                    log.exception("weekly overview failed")
             self._stop.wait(max(1, settings.sync_interval_minutes) * 60)
