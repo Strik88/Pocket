@@ -10,7 +10,7 @@ from .conftest import RECORDINGS, make_transport
 
 
 def _files(root: Path):
-    return sorted(str(p.relative_to(root)) for p in root.rglob("*.md"))
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*.md"))
 
 
 def test_full_sync_sorts_per_client(settings):
