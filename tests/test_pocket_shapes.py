@@ -403,3 +403,58 @@ def test_ticks_never_jump_to_an_item_left_open():
     assert still_ticked(["Offerte sturen (Ian)", "Bel Petra", "Verslag (2026-10-01)"],
                         [(True, "Offerte sturen"), (True, "Bel  Petra"), (True, "Verslag (2026-10-01T00:00:00Z)")]) == {
         "Offerte sturen (Ian)", "Bel Petra", "Verslag (2026-10-01)"}
+
+
+SPK0 = dict(CURRENT, transcript=[
+    {"speaker": "Speaker 0", "text": "Ik ben persoon A.", "start": 0},
+    {"speaker": "Speaker 1", "text": "Ik ben persoon B.", "start": 2},
+])
+
+
+def test_upgrade_that_stopped_halfway_can_run_again(settings, monkeypatch):
+    import pytest
+
+    path = as_v100(settings, SPK0, labels=["Speaker 0", "Jan"], names={"Speaker 1": "Jan"}, keep_actions=True)
+    real_save = sync.save_state
+
+    def crash(*a, **k):
+        raise KeyboardInterrupt("app closed")
+
+    monkeypatch.setattr(sync, "save_state", crash)
+    with pytest.raises(KeyboardInterrupt):
+        sync.upgrade(settings)  # the file is aligned, the state is not saved
+    monkeypatch.setattr(sync, "save_state", real_save)
+    sync.upgrade(settings)
+    sync.upgrade(settings)
+    assert turns(path) == [("Speaker 1", "Ik ben persoon A."), ("Jan", "Ik ben persoon B.")]
+    sync.rename_speakers(settings, "rec_now", {"Speaker 1": "Ian"})
+    sync.run_sync(settings, transport=make_transport({"rec_now": dict(SPK0, updated_at="2026-10-01T09:00:00Z")}), full=True)
+    assert turns(path) == [("Ian", "Ik ben persoon A."), ("Jan", "Ik ben persoon B.")]
+
+
+def test_a_locked_file_does_not_stop_the_sync_or_move_names_twice(settings, monkeypatch):
+    path = as_v100(settings, SPK0, labels=["Ian", "Speaker 1"], names={"Speaker 0": "Ian"}, keep_actions=True)
+    real_rename = sync.rename_speakers_in_file
+
+    def locked(*a, **k):
+        raise PermissionError("in use by OneDrive")
+
+    monkeypatch.setattr(sync, "rename_speakers_in_file", locked)
+    res = sync.run_sync(settings, transport=make_transport({"rec_now": SPK0}))
+    assert not res.message.startswith("in use")
+    state = sync.load_state(settings)
+    assert state["speakers"]["rec_now"] == {"Speaker 0": "Ian"} and state["refetch_ids"] == {"rec_now": 1}
+    monkeypatch.setattr(sync, "rename_speakers_in_file", real_rename)
+    sync.run_sync(settings, transport=make_transport({"rec_now": SPK0}))
+    assert turns(path) == [("Ian", "Ik ben persoon A."), ("Speaker 2", "Ik ben persoon B.")]
+    sync.run_sync(settings, transport=make_transport({"rec_now": dict(SPK0, updated_at="2026-10-01T09:00:00Z")}), full=True)
+    assert turns(path) == [("Ian", "Ik ben persoon A."), ("Speaker 2", "Ik ben persoon B.")]
+    assert "refetch_ids" not in sync.load_state(settings)
+
+
+def test_name_next_to_pocket_labels_in_plain_text():
+    rec = parse_recording({"id": "r", "title": "x", "transcription": {"transcription": {"text": (
+        "Ian Striks: Goedemorgen, zullen we beginnen?\nUnknown Speaker 2: Ja, prima.\nIan Striks: Eerst de planning.\n"
+        "Unknown Speaker 2: Die loopt uit.\nUnknown Speaker 3: Dat lijkt me haalbaar."
+    )}}})
+    assert [s.speaker for s in rec.segments] == ["Ian Striks", "Unknown Speaker 2", "Ian Striks", "Unknown Speaker 2", "Unknown Speaker 3"]
