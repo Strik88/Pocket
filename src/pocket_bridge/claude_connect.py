@@ -21,19 +21,44 @@ def claude_desktop_config_path() -> Path:
     return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
 
 
+def claude_desktop_config_paths() -> list[Path]:
+    """Every config file Claude Desktop may read.
+
+    The Microsoft Store / MSIX build of Claude Desktop on Windows runs in a
+    virtualised file system and reads its config from
+    %LOCALAPPDATA%\\Packages\\Claude_<id>\\LocalCache\\Roaming\\Claude instead of
+    %APPDATA%\\Claude, so on Windows we write to both.
+    """
+    paths = [claude_desktop_config_path()]
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        packages = local / "Packages"
+        if packages.exists():
+            for pkg in sorted(packages.glob("Claude_*")):
+                paths.append(pkg / "LocalCache" / "Roaming" / "Claude" / "claude_desktop_config.json")
+    return paths
+
+
+def python_for_mcp() -> str:
+    """Claude talks to the MCP server over stdin/stdout, so never use pythonw.exe (no console streams)."""
+    exe = Path(sys.executable)
+    if exe.name.lower() == "pythonw.exe" and exe.with_name("python.exe").exists():
+        return str(exe.with_name("python.exe"))
+    return str(exe)
+
+
 def server_entry() -> dict:
     """How Claude should start our MCP server: the Python of this very environment."""
-    return {"command": sys.executable, "args": ["-m", "pocket_bridge", "mcp"]}
+    return {"command": python_for_mcp(), "args": ["-m", "pocket_bridge", "mcp"]}
 
 
 def claude_code_command() -> str:
-    exe = sys.executable
+    exe = python_for_mcp()
     quoted = f'"{exe}"' if " " in exe else exe
     return f"claude mcp add {SERVER_NAME} --scope user -- {quoted} -m pocket_bridge mcp"
 
 
-def is_connected() -> bool:
-    path = claude_desktop_config_path()
+def _has_server(path: Path) -> bool:
     if not path.exists():
         return False
     try:
@@ -43,9 +68,11 @@ def is_connected() -> bool:
     return SERVER_NAME in (cfg.get("mcpServers") or {})
 
 
-def connect_claude_desktop() -> Path:
-    """Add (or update) our server in claude_desktop_config.json. Makes a backup first."""
-    path = claude_desktop_config_path()
+def is_connected() -> bool:
+    return any(_has_server(p) for p in claude_desktop_config_paths())
+
+
+def _write_entry(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     cfg: dict = {}
     if path.exists():
@@ -61,7 +88,15 @@ def connect_claude_desktop() -> Path:
         shutil.copy2(path, backup)
     cfg.setdefault("mcpServers", {})[SERVER_NAME] = server_entry()
     path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-    return path
+
+
+def connect_claude_desktop() -> Path:
+    """Add (or update) our server in every Claude Desktop config. Makes a backup first.
+    Returns the main path (the last one written is the one Store installs use)."""
+    paths = claude_desktop_config_paths()
+    for path in paths:
+        _write_entry(path)
+    return paths[-1]
 
 
 def manual_snippet() -> str:

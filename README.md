@@ -35,7 +35,7 @@ git clone https://github.com/strik88/pocket.git PocketBridge
 
 | Mac | Windows |
 |---|---|
-| Dubbelklik op **`start-mac.command`** | Dubbelklik op **`start-windows.bat`** |
+| Dubbelklik op **`start-mac.command`** | Dubbelklik op **`start-windows.bat`** (zie ook [Stap voor stap op Windows](#stap-voor-stap-op-windows)) |
 
 De eerste keer installeert het script automatisch [uv](https://docs.astral.sh/uv/) (dat regelt Python voor je) en de benodigde onderdelen. Dat duurt een paar minuten. Daarna opent je browser vanzelf op **http://127.0.0.1:8765** en verschijnt er een **oranje rondje in de menubalk** (Mac) of **een icoon in het systeemvak** (Windows). Via dat icoon open je de app, synchroniseer je, zet je *Start bij inloggen* aan of sluit je af. Het terminalvenster mag je sluiten.
 
@@ -52,6 +52,48 @@ De eerste keer installeert het script automatisch [uv](https://docs.astral.sh/uv
 5. **Koppelen aan Claude Desktop** met één klik. Herstart daarna Claude Desktop.
 
 Klik op **Nu synchroniseren** en je opnames verschijnen. Onder **Instellingen** koppel je daarna je agenda, zet je zoeken op betekenis aan en kies je of Pocket Bridge bij het inloggen start.
+
+---
+
+## Stap voor stap op Windows
+
+Werk je op Windows? Volg dan deze stappen. Reken voor de eerste keer op ongeveer 10 minuten.
+
+**1. Downloaden**
+Ga naar **github.com/Strik88/Pocket**, klik op de groene knop **Code** en kies **Download ZIP**. Er komt een bestand `Pocket-main.zip` in je map *Downloads*.
+
+**2. Uitpakken (belangrijk)**
+Klik met de **rechtermuisknop** op `Pocket-main.zip` en kies **Alles uitpakken…**. Typ als doelmap `C:\Users\<jouw naam>\PocketBridge` en klik op **Uitpakken**.
+Dubbelklik dus niet gewoon op de ZIP om er vanuit het ZIP-venster iets te starten: dan draait het programma vanuit een tijdelijke map en werkt de koppeling met Claude later niet.
+
+**3. Starten**
+Open de uitgepakte map (er zit een map `Pocket-main` in) en dubbelklik op **`start-windows.bat`**. Zie je geen `.bat`? Zoek dan het bestand `start-windows` met als type *Windows-batchbestand*.
+- Krijg je een blauw scherm *"Windows heeft uw pc beschermd"*? Klik op **Meer informatie** en dan op **Toch uitvoeren**. Dat komt doordat het bestand van internet komt en niet door Microsoft is ondertekend.
+- Er opent een zwart venster. De eerste keer worden daarin [uv](https://docs.astral.sh/uv/) (dat regelt Python voor je) en de onderdelen geïnstalleerd. Dat duurt een paar minuten; laat het venster gewoon openstaan.
+
+**4. De app**
+Je browser opent vanzelf **http://127.0.0.1:8765** met de installatiehulp. Rechtsonder in de taakbalk verschijnt een **oranje rondje**; staat het er niet, klik dan op het pijltje **^** (verborgen pictogrammen). Via dat rondje open je de app, synchroniseer je en sluit je af. Het zwarte venster sluit vanzelf.
+
+**5. Installatiehulp volgen**
+Pocket-key plakken, map kiezen, klanten toevoegen, optioneel je Anthropic-key, en op **Koppel Claude Desktop** klikken (zie [De installatiehulp volgen](#3-de-installatiehulp-volgen)).
+
+**6. Claude Desktop herstarten**
+Sluit Claude Desktop **helemaal** af: klik rechtsonder in het systeemvak met de rechtermuisknop op het Claude-icoon en kies **Quit** / **Afsluiten**. Alleen het venster sluiten is niet genoeg. Open Claude daarna opnieuw. Onder **Instellingen → Developer** zie je nu `pocket-transcripts` staan.
+Pocket Bridge schrijft de koppeling zowel naar de gewone plek als naar de plek die de Microsoft Store-versie van Claude gebruikt, dus het werkt met beide installaties.
+
+**7. Automatisch starten (aanrader)**
+Vink in de app onder **Instellingen → Altijd aan** de optie **Start bij inloggen** aan. Pocket Bridge start dan elke keer als je Windows opstart, en synchroniseert op de achtergrond.
+
+**Waar staat alles op Windows?**
+
+| Wat | Waar |
+|---|---|
+| Je transcripten | `Documenten\Pocket Transcripten` (of de map die je zelf koos) |
+| Het programma | `C:\Users\<jouw naam>\PocketBridge\Pocket-main` |
+| Instellingen en sleutels | `%APPDATA%\PocketBridge` (typ dit in de adresbalk van Verkenner) |
+| Logbestand bij problemen | `%APPDATA%\PocketBridge\pocket-bridge.log` |
+
+**Later bijwerken naar een nieuwe versie:** sluit Pocket Bridge af (rechtermuisknop op het oranje rondje → *Afsluiten*), download de nieuwe ZIP, pak hem uit over de oude map heen en start `start-windows.bat` opnieuw. Je instellingen en transcripten blijven bewaard, want die staan op een andere plek.
 
 ---
 
@@ -193,7 +235,8 @@ Daarna kiest Pocket Bridge binnen de klant een **project** als de projectnaam of
 |---|---|
 | *"Pocket weigert de API-key"* | Maak een nieuwe key aan in Pocket en plak hem opnieuw. Let op spaties. |
 | Geen icoon in de menubalk / het systeemvak | Kijk in het logbestand `~/.pocket-bridge/pocket-bridge.log` (Windows: `%APPDATA%\PocketBridge\pocket-bridge.log`). De app werkt ook zonder icoon op http://127.0.0.1:8765. |
-| Claude Desktop ziet de tools niet | Herstart Claude Desktop volledig (Mac: Cmd+Q). Controleer onder *Instellingen → Developer* of `pocket-transcripts` draait. |
+| Claude Desktop ziet de tools niet | Herstart Claude Desktop volledig (Mac: Cmd+Q; Windows: rechtermuisknop op het Claude-icoon in het systeemvak → *Quit*). Controleer onder *Instellingen → Developer* of `pocket-transcripts` draait. Klik zo nodig nog een keer op *Koppel Claude Desktop*. |
+| Windows: het zwarte venster sluit meteen of meldt een fout | Controleer of je de ZIP met *Alles uitpakken* hebt uitgepakt en niet vanuit het ZIP-venster start. Start `start-windows.bat` opnieuw; kijk anders in `%APPDATA%\PocketBridge\pocket-bridge.log`. |
 | Map verplaatst na koppelen | Klik opnieuw op *Koppel Claude Desktop*, en zet *Start bij inloggen* uit en weer aan. |
 | Agenda-test vindt 0 afspraken | Controleer of je de *geheime* iCal-link gebruikt (niet de openbare). Bij Outlook moet de agenda gepubliceerd zijn met details. |
 | Zoeken op betekenis: model downloaden mislukt | Controleer je internetverbinding en klik op *Index nu bijwerken*. Gewoon zoeken blijft intussen werken. |

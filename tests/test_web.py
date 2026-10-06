@@ -137,3 +137,29 @@ def test_ask_streams_sources_text_and_citations(settings, monkeypatch):
 
 def test_ping(settings):
     assert client().get("/api/ping").json()["app"] == "pocket-bridge"
+
+
+def test_connect_writes_store_config_on_windows(tmp_path, monkeypatch):
+    """Claude Desktop from the Microsoft Store reads a virtualised config path; write both."""
+    roaming, local = tmp_path / "Roaming", tmp_path / "Local"
+    store = local / "Packages" / "Claude_pzs8sxrjxfjjc" / "LocalCache" / "Roaming" / "Claude"
+    store.mkdir(parents=True)
+    (store / "claude_desktop_config.json").write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}))
+    monkeypatch.setattr(claude_connect.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(roaming))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    claude_connect.connect_claude_desktop()
+    for cfg in (roaming / "Claude" / "claude_desktop_config.json", store / "claude_desktop_config.json"):
+        assert "pocket-transcripts" in json.loads(cfg.read_text())["mcpServers"]
+    assert "other" in json.loads((store / "claude_desktop_config.json").read_text())["mcpServers"]
+    assert claude_connect.is_connected()
+
+
+def test_mcp_uses_python_not_pythonw(tmp_path, monkeypatch):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (scripts / "python.exe").write_text("")
+    (scripts / "pythonw.exe").write_text("")
+    monkeypatch.setattr(claude_connect.sys, "executable", str(scripts / "pythonw.exe"))
+    assert claude_connect.server_entry()["command"].endswith("python.exe")
+    assert "pythonw" not in claude_connect.claude_code_command()

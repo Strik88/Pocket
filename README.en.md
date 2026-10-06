@@ -25,6 +25,18 @@ Everything runs locally. Your transcripts, calendar link and keys stay on your m
    - Windows SmartScreen? **More info → Run anyway**.
 3. **Follow the setup guide** (switch to EN at the bottom left): Pocket API key (*Settings → Developer → API Keys* in Pocket), folder, clients, optional Anthropic API key, connect Claude Desktop. Then under **Settings** connect your calendar, turn on search on meaning and choose whether to start at login.
 
+## Step by step on Windows
+
+1. **Download**: on github.com/Strik88/Pocket click **Code → Download ZIP**.
+2. **Extract (important)**: right-click `Pocket-main.zip` → **Extract All…** → choose `C:\Users\<you>\PocketBridge`. Don't start anything from inside the ZIP window.
+3. **Start**: open the extracted `Pocket-main` folder and double-click **`start-windows.bat`** (type *Windows Batch File*). Blue *"Windows protected your PC"* screen? **More info → Run anyway**. The first run installs uv and the dependencies in a black window; this takes a few minutes.
+4. Your browser opens **http://127.0.0.1:8765** and an **orange dot** appears in the system tray (bottom right; click **^** if hidden).
+5. Follow the setup guide and click **Connect Claude Desktop**.
+6. **Fully quit Claude Desktop** (right-click its tray icon → **Quit**) and reopen it; `pocket-transcripts` appears under **Settings → Developer**. Both the regular and the Microsoft Store version of Claude Desktop are supported.
+7. Turn on **Settings → Always on → Start at login**.
+
+Transcripts: `Documents\Pocket Transcripts`. Settings and keys: `%APPDATA%\PocketBridge`. Log: `%APPDATA%\PocketBridge\pocket-bridge.log`. To update: quit via the tray icon, extract the new ZIP over the old folder, run `start-windows.bat` again; settings and transcripts are kept.
+
 ## Features
 
 - **Folders per client and project**: `Clients/<Client>/[<Project>/]<year>/…md`, plus `_Dossier.md`, `_Briefings/` and `_Follow-ups/` per client and `_Weekly/` at the top. Drag files between folders and Pocket Bridge follows; after a move it **suggests keywords** so similar recordings are filed automatically next time.
