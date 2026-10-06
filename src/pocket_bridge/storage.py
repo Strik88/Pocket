@@ -122,22 +122,37 @@ def _action_key(text: str) -> str:
     return re.sub(r"(\d{4}-\d{2}-\d{2})T[^,)\s]*", r"\1", " ".join(str(text).split())).casefold()
 
 
-def _action_title(key: str) -> str:
-    return re.sub(r"\s*\([^()]*\)$", "", key)
+def _split_note(key: str) -> tuple[str, set[str]]:
+    """'bel petra (ian, 2026-10-01)' -> ('bel petra', {'ian', '2026-10-01'})"""
+    m = re.match(r"^(.*?)\s*\(([^()]*)\)$", key)
+    if not m:
+        return key, set()
+    return m.group(1), {f.strip() for f in m.group(2).split(",") if f.strip()}
 
 
-def still_ticked(items: list[str], done: set[str]) -> set[str]:
-    """Which of the new action item texts were ticked off before, when Pocket's wording shifted slightly:
-    "Bel  Petra" -> "Bel Petra", a due date without the time, an owner added as " (Ian)"."""
-    if not done:
+def still_ticked(items: list[str], old: list[tuple[bool, str]]) -> set[str]:
+    """Which new action item texts were ticked off in the old file, also when Pocket's wording shifted
+    slightly: "Bel  Petra" -> "Bel Petra", a due date without the time, an owner or date added in
+    parentheses. An item that matches one left open stays open."""
+    if not any(done for done, _ in old):
         return set()
-    done_keys = {_action_key(d) for d in done}
-    done_titles = done_keys | {_action_title(k) for k in done_keys}
-    titles = [_action_title(_action_key(a)) for a in items]
+    done_exact = {text for done, text in old if done}
+    done_keys = {_action_key(text) for done, text in old if done}
+    open_keys = {_action_key(text) for done, text in old if not done}
+    old_split = [(done, *_split_note(_action_key(text))) for done, text in old]
+    new_split = [_split_note(_action_key(a)) for a in items]
     out = set()
-    for a, title in zip(items, titles):
+    for a, (title, fields) in zip(items, new_split):
         key = _action_key(a)
-        if a in done or key in done_keys or (titles.count(title) == 1 and title in done_titles):
+        if a in done_exact or (key in done_keys and key not in open_keys):
+            out.add(a)
+            continue
+        same_old = [o for o in old_split if o[1] == title]
+        same_new = [n for n in new_split if n[0] == title]
+        if key in open_keys or len(same_old) != 1 or len(same_new) != 1:
+            continue
+        done, _, old_fields = same_old[0]
+        if done and old_fields <= fields:  # only details were added, e.g. an owner or a date
             out.add(a)
     return out
 
@@ -150,12 +165,14 @@ def render_markdown(
     project: str | None = None,
     meeting: dict | None = None,
     speakers: dict[str, str] | None = None,
-    done_actions: set[str] | None = None,
+    done_actions: set[str] | list[tuple[bool, str]] | None = None,
 ) -> str:
-    """meeting: Event.as_dict(); speakers: {"Speaker 1": "Jan"}; done_actions: texts already ticked off."""
+    """meeting: Event.as_dict(); speakers: {"Speaker 1": "Jan"}; done_actions: the old file's action items as
+    (done, text) pairs, or just the texts already ticked off."""
     lang = settings.language
     speakers = speakers or {}
-    done_actions = still_ticked(rec.action_items, done_actions or set()) | rec.actions_completed
+    old = [(True, a) for a in done_actions] if isinstance(done_actions, (set, frozenset)) else list(done_actions or [])
+    done_actions = still_ticked(rec.action_items, old) | rec.actions_completed
     fm = {
         "pocket_id": rec.id,
         "title": one_line(rec.title),

@@ -140,9 +140,21 @@ def test_colon_lines_inside_a_turn_stay_in_the_turn():
     assert rec.segments[0].text.endswith("Punt twee: de planning.")
 
 
-def test_named_dialogue_in_plain_text():
-    rec = parse_recording({"id": "r", "title": "x", "transcript": "Ian: Hoe gaat het?\nJan: Goed.\nIan: Mooi.\nJan: En met jou?"})
+def test_named_dialogue_in_plain_text_only_with_listed_speakers():
+    text = "Ian: Hoe gaat het?\nJan: Goed.\nIan: Mooi.\nJan: En met jou?"
+    assert parse_recording({"id": "r", "title": "x", "transcript": text}).segments == []
+    rec = parse_recording({"id": "r", "title": "x", "transcript": text, "speakers": [{"id": "a", "name": "Ian"}, {"id": "b", "name": "Jan"}]})
     assert [s.speaker for s in rec.segments] == ["Ian", "Jan", "Ian", "Jan"]
+
+
+def test_repeated_labels_in_notes_stay_text():
+    for text in (
+        "Agenda maandag 09:00\nOverleg met Acme.\nAgenda maandag 11:30\nLunch met Jan.\nAgenda dinsdag 14:00\nWerkcollege.\nAgenda dinsdag 16:30\nBorrel.",
+        "Todo: Jan bellen.\nTodo: offerte sturen.\nBoodschappen: melk.\nBoodschappen: brood.",
+        "Besluit: we gaan door.\nActie: Ian plant.\nBesluit: budget blijft.\nActie: Jan belt.",
+    ):
+        rec = parse_recording({"id": "r", "title": "x", "transcript": text})
+        assert rec.segments == [] and rec.transcript_text == text
 
 
 def test_prose_with_a_colon_is_left_alone():
@@ -289,13 +301,14 @@ def test_without_stored_json_only_gaining_files_are_fetched_and_rewritten(settin
 
     sync.upgrade(settings)
     assert sorted(sync.load_state(settings)["refetch_ids"]) == ["rec_failing", "rec_now", "rec_plain"]
-    for attempt in range(3):  # Pocket no longer has rec_failing (404)
+    for attempt in range(4):  # Pocket no longer has rec_failing (404)
         transport = make_transport({"rec_now": CURRENT, "rec_plain": plain})
         res = sync.run_sync(settings, transport=transport)
         assert not res.errors
         listing = [c for c in transport.calls if c.url.path.endswith("/public/recordings")][0]
         assert listing.url.params.get("startDate") == "2026-10-03" or attempt  # no full sync
-    assert "refetch_ids" not in sync.load_state(settings)
+    assert not any(c.url.path.endswith("/rec_failing") for c in transport.calls)  # given up after 3 tries
+    assert sync.load_state(settings)["refetch_ids"] == {"rec_failing": 3}
     assert "Mijn notitie." in plain_path.read_text(encoding="utf-8")  # nothing gained: untouched
     assert "Verslag insturen" in path.read_text(encoding="utf-8")
     assert "Notitie bij interview." in (settings.root / ".pocket-bridge" / "backup" / "rec_now.md").read_text(encoding="utf-8")
@@ -341,3 +354,52 @@ def test_shape_asks_for_the_id_when_titles_repeat(settings, capsys):
     assert "rec_now" in out and "rec_two" in out
     main(["shape", "rec_two"])
     assert "recording: rec_two" in capsys.readouterr().out
+
+
+def test_names_given_after_an_upgrade_that_left_the_file_alone(settings):
+    # 1.0.0 already showed the action items and both speakers ("Speaker 0", "Speaker 1"): nothing to gain
+    data = dict(CURRENT, transcript=[
+        {"speaker": "Speaker 0", "text": "Ik ben persoon A.", "start": 0},
+        {"speaker": "Speaker 1", "text": "Ik ben persoon B.", "start": 2},
+    ])
+    path = as_v100(settings, data, labels=["Speaker 0", "Speaker 1"], keep_actions=True, note="\nNotitie.\n")
+    assert sync.upgrade(settings) == 0
+    assert turns(path) == [("Speaker 1", "Ik ben persoon A."), ("Speaker 2", "Ik ben persoon B.")]
+    assert "Notitie." in path.read_text(encoding="utf-8")
+    sync.rename_speakers(settings, "rec_now", {"Speaker 2": "Jan"})
+    newer = dict(data, updated_at="2026-10-01T09:00:00Z")
+    sync.run_sync(settings, transport=make_transport({"rec_now": newer}), full=True)
+    assert turns(path) == [("Speaker 1", "Ik ben persoon A."), ("Jan", "Ik ben persoon B.")]
+
+
+def test_names_migrate_when_pocket_updates_a_recording_given_up_on(settings):
+    settings.keep_raw_json = False
+    data = dict(CURRENT, transcript=[
+        {"speaker": "Speaker 0", "text": "Ik ben persoon A.", "start": 0},
+        {"speaker": "Speaker 1", "text": "Ik ben persoon B.", "start": 2},
+    ])
+    path = as_v100(settings, data, labels=["Speaker 0", "Jan"], names={"Speaker 1": "Jan"})
+    sync.upgrade(settings)
+    for _ in range(3):
+        sync.run_sync(settings, transport=make_transport({}))  # Pocket keeps failing (404)
+    newer = dict(data, updated_at="2026-10-01T09:00:00Z")
+    sync.run_sync(settings, transport=make_transport({"rec_now": newer}), full=True)
+    assert turns(path) == [("Speaker 1", "Ik ben persoon A."), ("Jan", "Ik ben persoon B.")]
+    assert "refetch_ids" not in sync.load_state(settings)
+
+
+def test_stored_json_without_updated_at_is_not_trusted(settings):
+    undated = dict(CURRENT, updated_at="")
+    as_v100(settings, undated)
+    sync.upgrade(settings)
+    assert sync.load_state(settings)["refetch_ids"] == {"rec_now": 0}
+
+
+def test_ticks_never_jump_to_an_item_left_open():
+    from pocket_bridge.storage import still_ticked
+
+    assert still_ticked(["Bel Petra (Jan)"], [(True, "Bel Petra (Ian)"), (False, "Bel Petra (Jan)")]) == set()
+    assert still_ticked(["Factuur sturen (project B)"], [(True, "Factuur sturen (project A)")]) == set()
+    assert still_ticked(["Offerte sturen (Ian)", "Bel Petra", "Verslag (2026-10-01)"],
+                        [(True, "Offerte sturen"), (True, "Bel  Petra"), (True, "Verslag (2026-10-01T00:00:00Z)")]) == {
+        "Offerte sturen (Ian)", "Bel Petra", "Verslag (2026-10-01)"}

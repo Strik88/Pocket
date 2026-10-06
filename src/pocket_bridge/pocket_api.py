@@ -318,9 +318,9 @@ def _label_speakers(segments: list[Segment], names: dict[str, str]) -> None:
 
 # "Speaker 1: tekst", "[00:01:02] Ian: tekst", "Ian (00:01): tekst"
 _TS = r"[\[(]?\d{1,2}:\d{2}(?::\d{2})?[\])]?"
-_INLINE_TURN = re.compile(rf"^\s*(?:(?P<ts1>{_TS})\s*[-–]?\s*)?(?P<name>[^\W\d_][\w.'’-]*(?: [\w.'’-]+){{0,3}}?)\s*(?P<ts2>{_TS})?\s*:\s+(?P<text>\S.*)$")
+_INLINE_TURN = re.compile(rf"^(?:(?P<ts1>{_TS})[ \t]*(?:[-–][ \t]*)?)?(?P<name>[^\W\d_][\w.'’-]*(?: [\w.'’-]+){{0,3}}?)[ \t]*(?:(?P<ts2>{_TS})[ \t]*)?:\s+(?P<text>\S.*)$")
 # "Speaker 1  00:01:02" on its own line, followed by what was said
-_HEADER_TURN = re.compile(rf"^\s*(?P<name>[^\W\d_][\w.'’-]*(?: [\w.'’-]+){{0,3}}?)\s+(?P<ts>{_TS})\s*$")
+_HEADER_TURN = re.compile(rf"^(?P<name>[^\W\d_][\w.'’-]*(?: [\w.'’-]+){{0,3}}?)[ \t]+(?P<ts>{_TS})$")
 
 
 def _clock(ts: str | None) -> float | None:
@@ -336,12 +336,9 @@ _GENERIC_NAME = re.compile(r"^(?:unknown |onbekende )?(?:speaker|spk|spreker)[ _
 
 
 def _established(names: list[str], known: set[str]) -> set[str]:
-    """Names that are really speakers: they come back, look like Pocket's labels, or Pocket listed them.
-    A one-off "Todo:" or "Agenda maandag 09:00" in a memo is not a speaker."""
-    counts: dict[str, int] = {}
-    for n in names:
-        counts[n] = counts.get(n, 0) + 1
-    return {n for n, c in counts.items() if c >= 2 or _GENERIC_NAME.match(n) or n in known}
+    """Names that are really speakers: Pocket's own labels ("Speaker 1") or names Pocket listed for this
+    recording. "Todo:", "Besluit:" or "Agenda maandag 09:00" in a memo stay text, also when they repeat."""
+    return {n for n in names if _GENERIC_NAME.match(n) or n in known}
 
 
 def _segments_from_text(text: str, known: set[str] = frozenset()) -> list[Segment]:

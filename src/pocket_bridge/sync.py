@@ -204,7 +204,7 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
                 meeting = meetings.match_event(settings, rec.recorded_at, rec.duration_seconds) if settings.calendar_urls else None
                 if settings.demo_mode:
                     meeting = _demo_meeting(rid, rec)
-                done_actions: set[str] = set()
+                done_actions: list[tuple[bool, str]] = []
                 if existing:
                     path = Path(existing.path)
                     client, project = existing.client, existing.project
@@ -287,11 +287,12 @@ def after_change(settings: Settings, index: Index, clients: set[str], say=lambda
             log.warning("semantic index update failed: %s", exc)
 
 
-def _kept_from_file(path: Path) -> tuple[str, set[str], dict | None]:
-    """What a rewrite keeps from the current file: why it is filed here, ticked action items, the meeting."""
+def _kept_from_file(path: Path) -> tuple[str, list[tuple[bool, str]], dict | None]:
+    """What a rewrite keeps from the current file: why it is filed here, its action items with their
+    ticks, the meeting."""
     source = _current_source(path) or "kept"
     old = parse_markdown(path)
-    done = {text for done, text in (old.action_items if old else []) if done}
+    done = list(old.action_items) if old else []
     meeting = None
     if old and old.meta.get("meeting"):
         meeting = {"title": old.meta.get("meeting"), "attendees": old.meta.get("attendees") or []}
@@ -333,8 +334,15 @@ def _apply_upgrade(settings: Settings, state: dict, index: Index, row, rec) -> b
     names = state.get("speakers", {}).get(row.pocket_id) or {}
     gains_actions = bool(rec.action_items) and not (old and old.action_items)
     shown = {names.get(seg.speaker, seg.speaker) for seg in rec.segments if seg.speaker}  # as the file would show them
-    gains_speakers = len(shown) > len(speakers_in(current))
+    on_disk = speakers_in(current)
+    gains_speakers = len(shown) > len(on_disk)
     if not (gains_actions or gains_speakers):
+        # Left as it is, but speakers nobody named yet get today's label ("Speaker 0" -> "Speaker 1"),
+        # so a name given later is stored under the label the next rewrite uses.
+        named = set(names.values())
+        stale = {o: n for o, n in legacy_speaker_labels(rec.raw).items() if o != n and o in on_disk and o not in named}
+        if stale and rename_speakers_in_file(path, stale):
+            index.upsert_file(path)
         return False
     source, done, meeting = _kept_from_file(path)
     try:
@@ -368,7 +376,7 @@ def _upgrade_files(settings: Settings, state: dict, index: Index) -> set[str]:
         old = parse_markdown(Path(row.path))
         # The stored JSON must be the version the file was written from (it is not updated when
         # keeping raw data was switched off later); otherwise fetch the current version.
-        if rec is None or rec.id != rid or not old or rec.updated_at != str(old.meta.get("pocket_updated_at") or ""):
+        if rec is None or rec.id != rid or not old or not rec.updated_at or rec.updated_at != str(old.meta.get("pocket_updated_at") or ""):
             pending.setdefault(rid, 0)
             continue
         _migrate_names(state, rid, rec.raw)
@@ -383,13 +391,16 @@ def _upgrade_files(settings: Settings, state: dict, index: Index) -> set[str]:
 
 def _refetch(settings: Settings, state: dict, index: Index, pocket, pending: dict, result: SyncResult, touched: set[str]) -> None:
     """Fetch the recordings the upgrade could not handle offline, one by one, and rewrite only those that
-    gain something. Recordings the user deleted or archived stay gone; one that keeps failing is given up
-    after three syncs and its file stays as it is."""
+    gain something. Recordings the user deleted or archived stay gone. After three failed tries a
+    recording is no longer fetched here; it stays listed so the normal sync upgrades it (speaker names
+    included) when Pocket next changes it."""
     raw_dir = meta_dir(settings) / "raw"
     for rid in list(pending):
         row = index.get(rid)
         if not row or not _SAFE_ID.fullmatch(rid):
             pending.pop(rid)
+            continue
+        if pending[rid] >= 3:  # given up fetching; handled when Pocket next updates it (main loop)
             continue
         try:
             rec = pocket.get_recording(rid)
@@ -397,8 +408,6 @@ def _refetch(settings: Settings, state: dict, index: Index, pocket, pending: dic
                 raise ValueError("id mismatch")
         except Exception as exc:
             pending[rid] = pending.get(rid, 0) + 1
-            if pending[rid] >= 3:
-                pending.pop(rid)
             log.warning("upgrade: fetching a recording again failed: %s", exc)
             continue
         if settings.keep_raw_json:
