@@ -170,6 +170,8 @@ export function renderReview(root, proposal, { onboarding = false, onApplied, on
     const n = p.reduce((a, c) => a + c.recording_ids.length, 0);
     $("#propSummary", root).textContent = t("prop_summary", { c: tp("client", p.length), n: tp("conv", n) });
     const btn = $("#propApply", root);
+    const created = p.filter((c) => !c.existing_client).length;
+    btn.innerHTML = `${icon("check")} ${esc(created ? t("prop_apply_n", { c: tp("client", created), n: tp("conv", n) }) : t("prop_apply_only", { n: tp("conv", n) }))}`;
     if (p.length) btn.removeAttribute("aria-disabled"); else btn.setAttribute("aria-disabled", "true");
   }
 

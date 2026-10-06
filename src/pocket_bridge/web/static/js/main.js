@@ -82,6 +82,7 @@ function banners() {
   let html = "";
   if (st.settings.demo_mode) {
     html += `<div class="banner" role="note">${icon("play")}<span>${esc(t("demo_banner"))}</span><span class="spacer"></span>
+      <button class="btn small primary" id="demoConnect">${esc(t("demo_connect"))}</button>
       <button class="btn small" id="demoExit">${esc(t("demo_exit"))}</button></div>`;
   } else if (!st.settings.onboarding.completed) {
     html += `<div class="banner" role="note">${icon("info")}<span>${esc(t("setup_unfinished"))}</span><span class="spacer"></span>
@@ -90,12 +91,16 @@ function banners() {
   return html;
 }
 
-export async function leaveDemo(btn) {
+export async function leaveDemo(btn, target = "") {
   try {
     if (btn) btn.setAttribute("aria-disabled", "true");
     await api("/api/demo/stop", { method: "POST" });
     await refresh();
     toast(t("demo_left"));
+    if (target && !S.state.settings.onboarding.completed) {
+      await api("/api/onboarding", { method: "POST", body: { step: "pocket" } }).catch(() => {});
+      return go(target);
+    }
     go(S.state.settings.onboarding.completed ? "#/overview" : `#/setup/${S.state.settings.onboarding.step || "welcome"}`);
   } catch (e) {
     toast(errText(e), { type: "error" });
@@ -136,6 +141,7 @@ async function render() {
   const container = $("#view");
   container.innerHTML = banners() + `<div id="viewBody"></div>`;
   $("#demoExit")?.addEventListener("click", (e) => leaveDemo(e.currentTarget));
+  $("#demoConnect")?.addEventListener("click", (e) => leaveDemo(e.currentTarget, "#/setup/pocket"));
   const titleKey = "nav_" + navView;
   document.title = `${t(titleKey)} · Pocket Bridge by Striks`;
   try {

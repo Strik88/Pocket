@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import sys
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 
@@ -103,7 +104,14 @@ def stop() -> Settings:
 
 def transport() -> httpx.MockTransport:
     """Serves the sample conversations in the shape of the Pocket public API."""
-    recs = {r["id"]: {k: v for k, v in r.items() if k != "meeting"} for r in data()["recordings"]}
+    shift = date_shift()
+    recs = {}
+    for r in data()["recordings"]:
+        rec = {k: v for k, v in r.items() if k != "meeting"}
+        for key in ("recording_at", "updated_at"):
+            if shift and rec.get(key):
+                rec[key] = (datetime.fromisoformat(rec[key].replace("Z", "+00:00")) + shift).strftime("%Y-%m-%dT%H:%M:%SZ")
+        recs[r["id"]] = rec
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -122,6 +130,14 @@ def transport() -> httpx.MockTransport:
         return httpx.Response(404, json={"error": "not found"})
 
     return httpx.MockTransport(handler)
+
+
+def date_shift() -> timedelta:
+    """Whole weeks to move the sample conversations forward, so the newest one is always recent
+    (weekdays stay the same, so "maandag" in a transcript is still a Monday)."""
+    newest = max(datetime.fromisoformat(r["recording_at"].replace("Z", "+00:00")) for r in data()["recordings"])
+    gap = (datetime.now(timezone.utc) - newest).days
+    return timedelta(weeks=gap // 7)  # never into the future: the newest ends up 0 to 6 days ago
 
 
 def total() -> int:

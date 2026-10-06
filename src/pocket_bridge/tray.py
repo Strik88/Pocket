@@ -22,8 +22,8 @@ from .config import load_settings
 log = logging.getLogger(__name__)
 
 LABELS = {
-    "nl": {"open": "Open Pocket Bridge", "sync": "Nu ophalen", "autostart": "Start bij inloggen", "quit": "Afsluiten", "last": "Laatst opgehaald"},
-    "en": {"open": "Open Pocket Bridge", "sync": "Fetch now", "autostart": "Start at login", "quit": "Quit", "last": "Last fetched"},
+    "nl": {"open": "Open Pocket Bridge", "sync": "Nu ophalen", "autostart": "Start bij inloggen", "quit": "Afsluiten", "last": "Laatst opgehaald", "setup": "Rond eerst de installatie af in Pocket Bridge."},
+    "en": {"open": "Open Pocket Bridge", "sync": "Fetch now", "autostart": "Start at login", "quit": "Quit", "last": "Last fetched", "setup": "Finish the setup in Pocket Bridge first."},
 }
 
 
@@ -81,8 +81,8 @@ def run(port: int, open_browser: bool = True) -> None:
         import httpx
 
         try:
-            httpx.post(f"{url}/api/sync", timeout=5, headers=session.headers())
-            icon.notify(L["sync"], "Pocket Bridge")
+            r = httpx.post(f"{url}/api/sync", timeout=5, headers=session.headers())
+            icon.notify(L["setup"] if r.status_code == 409 else L["sync"], "Pocket Bridge")
         except Exception:
             log.exception("sync from tray failed")
 

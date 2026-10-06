@@ -81,7 +81,7 @@ async function renderClient(root, name, ctx) {
       </div>
       <div class="row">
         <button class="btn ai" id="briefBtn" ${st.ai_ready || st.settings.demo_mode ? "" : 'aria-disabled="true" aria-describedby="briefWhy"'}>${icon("sparkles")} ${esc(t("briefing_btn"))}</button>
-        <button class="btn" id="editBtn">${icon("pencil")} ${esc(t("edit"))}</button>
+        <button class="btn" id="editBtn">${icon(c.folder_only ? "plus" : "pencil")} ${esc(c.folder_only ? t("make_client") : t("edit"))}</button>
       </div>
     </div>
     ${st.ai_ready || st.settings.demo_mode ? "" : `<p class="help" id="briefWhy">${esc(t("needs_claude"))} <a href="#/settings/connections">${esc(t("connect_claude"))}</a></p>`}

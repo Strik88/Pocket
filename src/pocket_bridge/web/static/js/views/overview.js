@@ -111,7 +111,10 @@ function drawAttention(box, st) {
   })));
 }
 
+let justSynced = false;
+
 async function startSync(btn, root) {
+  justSynced = true;
   await run(btn, async () => {
     const r = await api("/api/sync", { method: "POST" });
     if (!r.started) toast(t("sync_busy"));
@@ -134,7 +137,8 @@ function drawSync(root, st) {
 
 function showLastResult(root, st) {
   const r = st.last_result;
-  if (!r || st.sync_running || !r.finished) return;
+  if (!justSynced || !r || st.sync_running || !r.finished) return;  // only after a fetch started here
+  justSynced = false;
   const fresh = Date.now() - new Date(r.finished) < 10 * 60 * 1000;
   if (!fresh) return;
   const parts = [tp("sync_new", r.new || 0)];

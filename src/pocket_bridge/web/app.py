@@ -584,6 +584,8 @@ def start_sync(full: bool = False):
     _progress.clear()
     _sync_count.update(done=0, total=0, title="")
     settings = load_settings()
+    if not settings.onboarding.completed and settings.onboarding.step != "fetch":
+        raise _err(409, "setup_unfinished")
     # During onboarding there are no clients yet: fetch only, sorting comes after the clients are known.
     allow_ai = settings.onboarding.completed
 
@@ -703,6 +705,8 @@ def guess_speakers(pocket_id: str):
 def followup(pocket_id: str):
     s, idx = _index()
     try:
+        if s.demo_mode and not s.ai_ready and not demo.followup(pocket_id):
+            raise _err(400, "demo_followup_only")
         if s.demo_mode and not s.ai_ready and demo.followup(pocket_id):
             mail = {**demo.followup(pocket_id), "to": [], "example": True}
             row = idx.get(pocket_id)
@@ -780,8 +784,10 @@ class BriefingReq(BaseModel):
 def briefing(body: BriefingReq):
     s, idx = _index()
     try:
-        if s.demo_mode and not s.ai_ready and demo.briefing(body.client):
-            return {"path": "", "markdown": demo.briefing(body.client), "example": True}
+        if s.demo_mode and not s.ai_ready:
+            if demo.briefing(body.client):
+                return {"path": "", "markdown": demo.briefing(body.client), "example": True}
+            raise _err(400, "demo_briefing_only", ", ".join(demo.data().get("briefings", {})))
         path, text = reports.make_briefing(s, idx, body.client)
     except ai.AIError as exc:
         raise _ai_err(exc) from exc

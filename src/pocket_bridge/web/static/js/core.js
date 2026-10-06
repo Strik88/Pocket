@@ -164,7 +164,7 @@ export async function run(btn, fn, { busy = t("busy"), retry = true } = {}) {
     return await fn();
   } catch (e) {
     if (e.name === "AbortError") return;
-    console.error(e);
+    if (!(e instanceof ApiError)) console.error(e);
     toast(errText(e), { type: "error", action: retry && btn ? { label: t("try_again"), fn: () => btn.click() } : null });
   } finally {
     if (btn && btn.isConnected) {

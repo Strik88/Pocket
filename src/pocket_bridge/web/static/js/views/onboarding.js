@@ -120,7 +120,7 @@ function renderWelcome(root) {
           <button class="btn cta" id="wStart">${esc(t("w_start"))} ${icon("arrow-right")}</button>
           <button class="btn" id="wDemo">${icon("play")} ${esc(t("w_demo"))}</button>
         </div>
-        <p class="muted small" style="margin-top:12px">${esc(t("w_time"))}</p>
+        <p class="muted small" style="margin-top:12px">${esc(t("w_time"))} ${esc(t("w_demo_note"))}</p>
         <div class="privacy" style="margin-top:32px">
           <b>${icon("shield-check")} ${esc(t("privacy_title"))}</b>
           <ul><li>${esc(t("privacy_files"))}</li><li>${esc(t("privacy_pocket"))}</li><li>${esc(t("privacy_claude"))}</li></ul>
@@ -557,6 +557,8 @@ async function renderDone(root) {
   $("#doneGo").onclick = (e) => run(e.currentTarget, async () => {
     await api("/api/onboarding", { method: "POST", body: { completed: true } });
     await refresh();
+    const s = S.state.settings;
+    if (s.auto_sync && !s.demo_mode) toast(t("done_auto", { n: s.sync_interval_minutes }));
     ctx.go("#/overview");
   });
 }

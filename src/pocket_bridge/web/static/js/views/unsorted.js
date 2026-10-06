@@ -6,7 +6,12 @@ export async function renderUnsorted(root, { onboarding = false } = {}) {
   const [recs, cl] = await Promise.all([api("/api/recordings?unsorted=true&skip_ignored=true&limit=500"), api("/api/clients")]);
   const clients = cl.clients.filter((c) => !c.folder_only).map((c) => c.name);
   const rows = recs.recordings;
-  const head = `<h1>${esc(onboarding ? t("ob_sort_title") : t("unsorted_title"))}</h1>`;
+  let head = `<h1>${esc(onboarding ? t("ob_sort_title") : t("unsorted_title"))}</h1>`;
+  const sorted = cl.clients.filter((c) => c.recordings);
+  if (onboarding && sorted.length) {
+    head += `<p class="lead">${esc(t("ob_sort_result"))}</p><div class="chips" style="margin:8px 0 20px">${sorted.map((c) =>
+      `<span class="chip">${icon("building-2", "sm")} ${esc(c.name)} · ${esc(tp("conv", c.recordings))}</span>`).join("")}</div>`;
+  }
   const ignoredNote = recs.ignored ? `<p class="help">${esc(tp("unsorted_ignored", recs.ignored))}</p>` : "";
   if (!rows.length) {
     root.innerHTML = `${head}<div class="msg ok">${icon("circle-check")}<p>${esc(t("unsorted_none"))}</p></div>${ignoredNote}`;
@@ -16,9 +21,10 @@ export async function renderUnsorted(root, { onboarding = false } = {}) {
     ${head}
     <p class="lead">${esc(tp("unsorted_lead", rows.length))}</p>
     <div class="row" style="margin:16px 0">
-      ${S.state.ai_ready && clients.length ? `<button class="btn ai" id="uClaude">${icon("sparkles")} ${esc(t("unsorted_claude"))}</button>` : ""}
+      ${S.state.ai_ready && clients.length ? `<button class="btn ai" id="uClaude" aria-describedby="uClaudeNote">${icon("sparkles")} ${esc(t("unsorted_claude"))}</button>` : ""}
       ${clients.length ? `<button class="btn" id="uRules">${icon("refresh-cw")} ${esc(t("unsorted_rules"))}</button>` : ""}
     </div>
+    ${S.state.ai_ready && clients.length ? `<p class="help" id="uClaudeNote" style="margin-top:-8px">${esc(t("unsorted_claude_note"))}</p>` : ""}
     <div id="uMoves"></div>
     <div class="card" style="padding:8px 16px">
       <ul class="list" id="uList">

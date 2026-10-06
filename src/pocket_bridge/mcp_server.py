@@ -209,7 +209,10 @@ def rename_speakers(recording: str, mapping: dict[str, str]) -> str:
 @server.tool()
 def sync_now(full: bool = False) -> str:
     """Fetch new recordings from Pocket now. full=True re-checks everything instead of only recent ones."""
-    return syncmod.run_sync(load_settings(), full=full).message
+    settings = load_settings()
+    if not settings.onboarding.completed:
+        return "Setup is not finished yet. Ask the user to finish it in the Pocket Bridge app first (http://127.0.0.1:8765)."
+    return syncmod.run_sync(settings, full=full).message
 
 
 @server.tool()
