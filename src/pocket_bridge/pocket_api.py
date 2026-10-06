@@ -332,34 +332,51 @@ def _clock(ts: str | None) -> float | None:
     return float(parts[0] * 3600 + parts[1] * 60 + parts[2]) if len(parts) == 3 else None
 
 
-def _segments_from_text(text: str) -> list[Segment]:
-    """Recover speaker turns from a plain-text transcript, only when the pattern is clear."""
-    lines = [ln for ln in text.splitlines() if ln.strip()]
+_GENERIC_NAME = re.compile(r"^(?:unknown |onbekende )?(?:speaker|spk|spreker)[ _-]?\d+$", re.I)
+
+
+def _established(names: list[str], known: set[str]) -> set[str]:
+    """Names that are really speakers: they come back, look like Pocket's labels, or Pocket listed them.
+    A one-off "Todo:" or "Agenda maandag 09:00" in a memo is not a speaker."""
+    counts: dict[str, int] = {}
+    for n in names:
+        counts[n] = counts.get(n, 0) + 1
+    return {n for n, c in counts.items() if c >= 2 or _GENERIC_NAME.match(n) or n in known}
+
+
+def _segments_from_text(text: str, known: set[str] = frozenset()) -> list[Segment]:
+    """Recover speaker turns from a plain-text transcript, only when the pattern is clear: at least two
+    established speakers, and their lines make up a real share of the text."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if len(lines) < 2:
         return []
     inline = [_INLINE_TURN.match(ln) for ln in lines]
-    hits = [m for m in inline if m]
-    if len(hits) >= 2 and len(hits) >= 0.5 * len(lines) and len({m.group("name") for m in hits}) <= 12:
+    names = _established([m.group("name").strip() for m in inline if m], known)
+    turns = [bool(m and m.group("name").strip() in names) for m in inline]
+    if len(names) >= 2 and sum(turns) >= 0.5 * len(lines):
         segs: list[Segment] = []
-        for ln, m in zip(lines, inline):
-            if m:
+        for ln, m, turn in zip(lines, inline, turns):
+            if turn:
                 segs.append(Segment(text=m.group("text").strip(), speaker=m.group("name").strip(), start=_clock(m.group("ts1") or m.group("ts2"))))
             elif segs:
-                segs[-1].text += "\n" + ln.strip()
+                segs[-1].text += "\n" + ln  # "Punt een: de begroting." stays part of the turn
             else:
-                segs.append(Segment(text=ln.strip()))
+                segs.append(Segment(text=ln))
         return segs
     headers = [_HEADER_TURN.match(ln) for ln in lines]
-    n_head = sum(1 for m in headers if m)
-    if n_head >= 2 and len({m.group("name") for m in headers if m}) <= 12:
+    names = _established([m.group("name").strip() for m in headers if m], known)
+    heads = [i for i, m in enumerate(headers) if m and m.group("name").strip() in names]
+    starts = [_clock(headers[i].group("ts")) or 0 for i in heads]
+    followed = all(i + 1 < len(lines) and i + 1 not in heads for i in heads)
+    if len(names) >= 2 and len(heads) >= 0.25 * len(lines) and followed and starts == sorted(starts):
         segs = []
-        for ln, m in zip(lines, headers):
-            if m:
-                segs.append(Segment(text="", speaker=m.group("name").strip(), start=_clock(m.group("ts"))))
+        for i, ln in enumerate(lines):
+            if i in heads:
+                segs.append(Segment(text="", speaker=headers[i].group("name").strip(), start=_clock(headers[i].group("ts"))))
             elif segs:
-                segs[-1].text = (segs[-1].text + "\n" + ln.strip()).strip()
+                segs[-1].text = (segs[-1].text + "\n" + ln).strip()
             else:
-                segs.append(Segment(text=ln.strip()))
+                segs.append(Segment(text=ln))
         return [s for s in segs if s.text]
     return []
 
@@ -374,14 +391,37 @@ def _pick_transcript(d: dict) -> tuple[list[Segment], str]:
     with_segments = [f for f in found if f[0]]
     segments, _ = (with_speakers or with_segments or [([], "")])[0]
     text = next((t for _, t in found if t.strip()), "")
+    names = _speaker_names(d)
     if segments:
-        _label_speakers(segments, _speaker_names(d))
+        _label_speakers(segments, names)
         if any(s.speaker for s in segments):
             return segments, ""
-        recovered = _segments_from_text(text) if text else []
+        recovered = _segments_from_text(text, set(names.values())) if text else []
         return (recovered, "") if recovered else (segments, "")
-    recovered = _segments_from_text(text)
+    recovered = _segments_from_text(text, set(names.values()))
     return (recovered, "") if recovered else ([], text)
+
+
+def legacy_speaker_labels(d: dict) -> dict[str, str]:
+    """Version 1.0.0 printed speakers as Pocket sent them (speaker 0 dropped, "SPEAKER_00" as is), and names
+    given to speakers are stored under those labels. Maps each 1.0.0 label to today's label for the same
+    person, so a name stays with the person it was given to."""
+    src = d.get("transcript", d.get("transcriptSegments"))  # the source 1.0.0 read
+    if isinstance(src, dict):
+        src = next((src[k] for k in ("segments", "transcriptSegments", "utterances", "items") if isinstance(src.get(k), list)), None)
+    if not isinstance(src, list):
+        return {}
+    items = [it for it in src if isinstance(it, dict) and _first_str(it, "text", "content", "transcript")]
+    segs = [Segment(text="", speaker=_speaker_of(it)) for it in items]
+    _label_speakers(segs, _speaker_names(d))
+    out: dict[str, str] = {}
+    for it, seg in zip(items, segs):
+        old = it.get("speaker") or it.get("speaker_name") or it.get("speakerName") or ""
+        if isinstance(old, dict):
+            old = old.get("name") or old.get("label") or ""
+        if old and seg.speaker:
+            out.setdefault(str(old), str(seg.speaker))
+    return out
 
 
 def _num(v: Any) -> float | None:

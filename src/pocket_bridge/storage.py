@@ -117,6 +117,31 @@ def _fmt_ts(seconds: float | None) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
+def _action_key(text: str) -> str:
+    """Compare action items loosely: whitespace, case and the time part of a due date may differ."""
+    return re.sub(r"(\d{4}-\d{2}-\d{2})T[^,)\s]*", r"\1", " ".join(str(text).split())).casefold()
+
+
+def _action_title(key: str) -> str:
+    return re.sub(r"\s*\([^()]*\)$", "", key)
+
+
+def still_ticked(items: list[str], done: set[str]) -> set[str]:
+    """Which of the new action item texts were ticked off before, when Pocket's wording shifted slightly:
+    "Bel  Petra" -> "Bel Petra", a due date without the time, an owner added as " (Ian)"."""
+    if not done:
+        return set()
+    done_keys = {_action_key(d) for d in done}
+    done_titles = done_keys | {_action_title(k) for k in done_keys}
+    titles = [_action_title(_action_key(a)) for a in items]
+    out = set()
+    for a, title in zip(items, titles):
+        key = _action_key(a)
+        if a in done or key in done_keys or (titles.count(title) == 1 and title in done_titles):
+            out.add(a)
+    return out
+
+
 def render_markdown(
     settings: Settings,
     rec: Recording,
@@ -130,7 +155,7 @@ def render_markdown(
     """meeting: Event.as_dict(); speakers: {"Speaker 1": "Jan"}; done_actions: texts already ticked off."""
     lang = settings.language
     speakers = speakers or {}
-    done_actions = (done_actions or set()) | rec.actions_completed
+    done_actions = still_ticked(rec.action_items, done_actions or set()) | rec.actions_completed
     fm = {
         "pocket_id": rec.id,
         "title": one_line(rec.title),

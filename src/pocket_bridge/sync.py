@@ -22,7 +22,7 @@ from .config import Client, Project, Settings, load_settings, save_settings
 from .dossier import build_dossier, rebuild_all
 from .i18n import t
 from .index import Index
-from .pocket_api import PocketClient, parse_recording
+from .pocket_api import PocketClient, legacy_speaker_labels, parse_recording
 from .storage import (
     client_dir,
     meta_dir,
@@ -161,7 +161,7 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
     index = Index(settings)
     index.refresh()  # pick up files the user moved by hand
     touched_clients: set[str] = _upgrade_files(settings, state, index)
-    full = full or bool(state.get("refetch"))
+    pending: dict = state.get("refetch_ids") or {}  # upgrade: files whose Pocket data must be fetched again
 
     start_date = settings.sync_since
     if not full and state.get("last_sync"):
@@ -208,8 +208,10 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
                 if existing:
                     path = Path(existing.path)
                     client, project = existing.client, existing.project
-                    if rid not in known and state.get("refetch"):  # fetched again for an upgrade
+                    if rid in pending:  # Pocket changed it and the upgrade still waited for it
+                        _migrate_names(state, rid, rec.raw)
                         _backup(settings, rid, path)
+                        pending.pop(rid)
                     source, done_actions, old_meeting = _kept_from_file(path)
                     meeting = meeting or old_meeting
                     result.updated += 1
@@ -235,13 +237,16 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
                     touched_clients.add(client)
                 if n % 10 == 0:
                     save_state(settings, state)
+            _refetch(settings, state, index, pocket, pending, result, touched_clients)
     except Exception as exc:
         result.errors.append(str(exc))
         result.message = str(exc)
 
+    if pending:
+        state["refetch_ids"] = pending
+    else:
+        state.pop("refetch_ids", None)
     state["last_sync"] = result.started if not result.message else state.get("last_sync", "")
-    if not result.message and not result.errors:
-        state.pop("refetch", None)
     state["last_result"] = result.as_dict()
     save_state(settings, state)
     after_change(settings, index, touched_clients, say)
@@ -294,60 +299,119 @@ def _kept_from_file(path: Path) -> tuple[str, set[str], dict | None]:
 
 
 def _backup(settings: Settings, rid: str, path: Path) -> None:
-    """Keep the current version of a file before an upgrade rewrites it (notes typed into it survive here)."""
+    """Keep the file as it was before an upgrade rewrites it, so notes typed into it survive. The first
+    copy is never overwritten: a second run would otherwise replace it with the rewritten file."""
     folder = meta_dir(settings) / "backup"
     folder.mkdir(exist_ok=True)
-    shutil.copy2(path, folder / f"{rid}.md")
+    target = folder / f"{rid}.md"
+    if not target.exists():
+        shutil.copy2(path, target)
+
+
+def _migrate_names(state: dict, rid: str, raw: dict) -> None:
+    """Names given to speakers in 1.0.0 are stored under 1.0.0's labels; move them to today's labels for
+    the same person. Runs once per recording, during the upgrade."""
+    stored = state.get("speakers", {}).get(rid)
+    mapping = legacy_speaker_labels(raw) if stored else {}
+    if not mapping:
+        return
+    moved = {k: v for k, v in stored.items() if k not in mapping}
+    moved.update({mapping[k]: v for k, v in stored.items() if k in mapping})
+    state["speakers"][rid] = moved
+
+
+def _apply_upgrade(settings: Settings, state: dict, index: Index, row, rec) -> bool:
+    """Rewrite one existing file when it gains action items or speakers. Returns True when rewritten."""
+    path = Path(row.path)
+    if not rec.has_transcript or not path.exists():
+        return False
+    try:
+        current = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    old = parse_markdown(path)
+    names = state.get("speakers", {}).get(row.pocket_id) or {}
+    gains_actions = bool(rec.action_items) and not (old and old.action_items)
+    shown = {names.get(seg.speaker, seg.speaker) for seg in rec.segments if seg.speaker}  # as the file would show them
+    gains_speakers = len(shown) > len(speakers_in(current))
+    if not (gains_actions or gains_speakers):
+        return False
+    source, done, meeting = _kept_from_file(path)
+    try:
+        _backup(settings, row.pocket_id, path)
+        path.write_text(render_markdown(settings, rec, row.client, source, row.project, meeting, names, done), encoding="utf-8")
+    except OSError as exc:
+        log.warning("could not rewrite a recording file: %s", exc)
+        return False
+    index.upsert_file(path)
+    return True
 
 
 def _upgrade_files(settings: Settings, state: dict, index: Index) -> set[str]:
-    """Rewrite existing files from the stored Pocket JSON after the reading of Pocket's data improved
-    (action items, speakers). Works offline; recordings without stored JSON are fetched again on the
-    next sync. Only files that gain something are rewritten, and the previous version is kept in
-    .pocket-bridge/backup. Returns the clients whose files changed."""
+    """After the reading of Pocket's data improved (action items, speakers): bring existing files up to
+    date from the stored Pocket JSON, offline. Only files that gain something are rewritten, each with a
+    backup in .pocket-bridge/backup. Files without stored JSON for the version on disk are listed in
+    state["refetch_ids"] and fetched one by one on the next sync. Returns the clients whose files changed."""
     if state.get("format", 1) >= FORMAT_VERSION:
         return set()
-    known: dict = state.setdefault("recordings", {})
-    speakers: dict = state.setdefault("speakers", {})
     raw_dir = meta_dir(settings) / "raw"
+    pending: dict = state.setdefault("refetch_ids", {})
     touched: set[str] = set()
     for row in index.list(limit=10_000_000):
-        if not _SAFE_ID.fullmatch(row.pocket_id or ""):
+        rid = row.pocket_id or ""
+        if not _SAFE_ID.fullmatch(rid):
             continue
         try:
-            rec = parse_recording(json.loads((raw_dir / f"{row.pocket_id}.json").read_text(encoding="utf-8")))
+            rec = parse_recording(json.loads((raw_dir / f"{rid}.json").read_text(encoding="utf-8")))
         except (OSError, ValueError):
-            if known.pop(row.pocket_id, None) is not None:
-                state["refetch"] = True  # no stored JSON: fetch it from Pocket again
+            rec = None
+        old = parse_markdown(Path(row.path))
+        # The stored JSON must be the version the file was written from (it is not updated when
+        # keeping raw data was switched off later); otherwise fetch the current version.
+        if rec is None or rec.id != rid or not old or rec.updated_at != str(old.meta.get("pocket_updated_at") or ""):
+            pending.setdefault(rid, 0)
             continue
-        path = Path(row.path)
-        if rec.id != row.pocket_id or not rec.has_transcript or not path.exists():
-            continue
-        try:
-            current = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        old = parse_markdown(path)
-        gains_actions = bool(rec.action_items) and not (old and old.action_items)
-        gains_speakers = len({s.speaker for s in rec.segments if s.speaker}) > len(speakers_in(current))
-        if not (gains_actions or gains_speakers):
-            continue
-        source, done, meeting = _kept_from_file(path)
-        try:
-            _backup(settings, row.pocket_id, path)
-            path.write_text(
-                render_markdown(settings, rec, row.client, source, row.project, meeting, speakers.get(row.pocket_id), done),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            log.warning("could not rewrite a recording file: %s", exc)
-            continue
-        index.upsert_file(path)
-        if row.client:
+        _migrate_names(state, rid, rec.raw)
+        if _apply_upgrade(settings, state, index, row, rec) and row.client:
             touched.add(row.client)
+    if not pending:
+        state.pop("refetch_ids", None)
     state["format"] = FORMAT_VERSION
     save_state(settings, state)
     return touched
+
+
+def _refetch(settings: Settings, state: dict, index: Index, pocket, pending: dict, result: SyncResult, touched: set[str]) -> None:
+    """Fetch the recordings the upgrade could not handle offline, one by one, and rewrite only those that
+    gain something. Recordings the user deleted or archived stay gone; one that keeps failing is given up
+    after three syncs and its file stays as it is."""
+    raw_dir = meta_dir(settings) / "raw"
+    for rid in list(pending):
+        row = index.get(rid)
+        if not row or not _SAFE_ID.fullmatch(rid):
+            pending.pop(rid)
+            continue
+        try:
+            rec = pocket.get_recording(rid)
+            if rec.id != rid:
+                raise ValueError("id mismatch")
+        except Exception as exc:
+            pending[rid] = pending.get(rid, 0) + 1
+            if pending[rid] >= 3:
+                pending.pop(rid)
+            log.warning("upgrade: fetching a recording again failed: %s", exc)
+            continue
+        if settings.keep_raw_json:
+            raw_dir.mkdir(exist_ok=True)
+            (raw_dir / f"{rid}.json").write_text(json.dumps(rec.raw, indent=1, ensure_ascii=False), encoding="utf-8")
+        _migrate_names(state, rid, rec.raw)
+        if _apply_upgrade(settings, state, index, row, rec):
+            result.updated += 1
+            if row.client:
+                touched.add(row.client)
+        pending.pop(rid)
+        state["refetch_ids"] = pending
+        save_state(settings, state)  # progress survives quitting the app halfway
 
 
 def upgrade(settings: Settings | None = None) -> int:

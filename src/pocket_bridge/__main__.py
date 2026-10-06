@@ -138,9 +138,19 @@ def cmd_shape(args: argparse.Namespace) -> None:
     index = Index(settings)
     try:
         index.refresh()
-        row = index.find(args.ref) if args.ref else next(iter(index.list(limit=1)), None)
+        if not args.ref:
+            rows = index.list(limit=1)
+        else:
+            rows = [r for r in [index.get(args.ref)] if r] or [r for r in index.list(limit=100_000) if r.title.casefold() == args.ref.casefold()]
+            rows = rows or [r for r in index.list(limit=100_000) if args.ref.casefold() in r.title.casefold()]
     finally:
         index.close()
+    if len(rows) > 1:
+        print("Meerdere gesprekken passen; geef het id mee. / Several recordings match; pass the id:")
+        for r in rows[:20]:
+            print(f"  {r.pocket_id}  {r.date[:16]}")
+        raise SystemExit(1)
+    row = rows[0] if rows else None
     if not row or not _SAFE_ID.fullmatch(row.pocket_id):
         raise SystemExit("Gesprek niet gevonden / recording not found")
     raw = meta_dir(settings) / "raw" / f"{row.pocket_id}.json"
@@ -148,6 +158,7 @@ def cmd_shape(args: argparse.Namespace) -> None:
         raise SystemExit("Geen opgeslagen Pocket-data; zet 'Technische gegevens bewaren' aan en haal opnieuw op. / Turn on 'Keep raw data from Pocket' and fetch again.")
     data = json.loads(raw.read_text(encoding="utf-8"))
     rec = parse_recording(data)
+    print(f"recording: {row.pocket_id}  {row.date[:16]}\n")
     print(json.dumps(_shape(data), indent=1, ensure_ascii=False))
     speakers = sorted({s.speaker for s in rec.segments if s.speaker})
     print(f"\nsegments: {len(rec.segments)}, speakers: {len(speakers)}, action items: {len(rec.action_items)}")
