@@ -73,7 +73,7 @@ def test_connect_claude_desktop_merges_and_backs_up(settings, tmp_path, monkeypa
 def test_index_page_served(settings):
     r = client().get("/")
     assert r.status_code == 200 and "Pocket Bridge" in r.text
-    assert client().get("/static/app.js").status_code == 200
+    assert client().get("/static/js/main.js").status_code == 200
 
 
 def test_actions_endpoints(settings):

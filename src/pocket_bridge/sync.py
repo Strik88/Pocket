@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -120,6 +121,10 @@ def run_sync(
     if not settings.pocket_ready:
         result.message = t(settings.language, "sync_no_key")
         return result
+    if settings.demo_mode and transport is None:
+        from . import demo
+
+        transport = demo.transport()
 
     if not _thread_lock.acquire(blocking=False):
         result.message = t(settings.language, "sync_busy")
@@ -180,6 +185,8 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
                     (raw_dir / f"{rid}.json").write_text(json.dumps(rec.raw, indent=1, ensure_ascii=False), encoding="utf-8")
 
                 meeting = meetings.match_event(settings, rec.recorded_at, rec.duration_seconds) if settings.calendar_urls else None
+                if settings.demo_mode:
+                    meeting = _demo_meeting(rid, rec)
                 done_actions: set[str] = set()
                 if existing:
                     path = Path(existing.path)
@@ -226,6 +233,17 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
     say(result.message)
 
 
+def _demo_meeting(rid: str, rec):
+    from . import demo
+
+    m = demo.meeting_for(rid)
+    if not m or not rec.recorded_at:
+        return None
+    emails = [e.group(0).lower() for a in m.get("attendees", []) for e in [re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", a)] if e]
+    end = rec.recorded_at + timedelta(seconds=rec.duration_seconds or 1800)
+    return meetings.Event(title=m.get("title", ""), start=rec.recorded_at, end=end, attendees=m.get("attendees", []), emails=emails)
+
+
 def after_change(settings: Settings, index: Index, clients: set[str], say=lambda m: None) -> None:
     """Refresh everything derived from the files: dossiers, Claude status notes, meaning index."""
     from . import reports, semantic
@@ -261,20 +279,30 @@ def _current_source(path: Path) -> str:
 
 def ensure_client(settings: Settings, client: str | None, project: str | None) -> tuple[str | None, str | None]:
     """Normalise names to the configured client/project, creating them if new. Caller saves settings."""
+    from .discovery import clean_name
+
     client = client.strip() if client else None
     project = project.strip() if (project and client) else None
     if client:
         cfg = settings.find_client(client)
         if not cfg:
-            cfg = Client(name=client)
-            settings.clients.append(cfg)
+            name = clean_name(settings, client, strip_legal=False)
+            if not name:
+                raise ValueError(f"invalid client name: {client}")
+            cfg = settings.find_client(name) or Client(name=name)
+            if cfg not in settings.clients:
+                settings.clients.append(cfg)
         client = cfg.name
         if project:
             p = cfg.find_project(project)
             if p:
                 project = p.name
             else:
-                cfg.projects.append(Project(name=project))
+                name = clean_name(settings, project, strip_legal=False)
+                if not name:
+                    raise ValueError(f"invalid project name: {project}")
+                cfg.projects.append(Project(name=name))
+                project = name
     return client, project
 
 

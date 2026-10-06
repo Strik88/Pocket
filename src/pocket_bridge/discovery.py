@@ -72,12 +72,13 @@ def normalize_name(name: str) -> str:
     return "".join(t for t in tokens if t not in drop)
 
 
-def clean_name(settings: Settings, name: str) -> str | None:
-    """A safe display name for a client/project, or None when unusable."""
+def clean_name(settings: Settings, name: str, strip_legal: bool = True) -> str | None:
+    """A safe display name for a client/project, or None when unusable.
+    strip_legal: drop "B.V."/"Ltd" etc. (for Claude's proposals; names typed by the user stay as typed)."""
     name = unicodedata.normalize("NFC", str(name or "")).strip().strip("\"'“”‘’")
     name = re.sub(r"\s+", " ", name)
     low = name.lower()
-    for form in LEGAL_FORMS:
+    for form in LEGAL_FORMS if strip_legal else []:
         if low.endswith(" " + form):
             name = name[: -len(form) - 1].rstrip(" ,")
             low = name.lower()
@@ -507,7 +508,7 @@ def validate(settings: Settings, index: Index, raw: dict, id_map: dict[str, str]
     for c in clients:
         if n >= 5 and len(c["recording_ids"]) / n > 0.7:
             warnings.append({"code": "dominant", "name": c["name"]})
-    if not settings.calendar_urls:
+    if not settings.calendar_urls and not settings.demo_mode:
         warnings.append({"code": "no_calendar"})
 
     recordings = {}
@@ -725,9 +726,9 @@ def heuristic(settings: Settings, index: Index) -> dict:
 
 
 def apply(settings: Settings, index: Index, edited: list[dict], ignore: dict | None = None,
-          move_recordings: bool = True, resort_with_rules: bool = True) -> dict:
+          move_recordings: bool = True, resort_with_rules: bool = True, clear_proposal: bool = True) -> dict:
     """Create/extend the accepted clients, move their unsorted recordings, then let the rules sort the rest."""
-    proposal = load_proposal(settings) or {}
+    proposal = (load_proposal(settings) if clear_proposal else None) or {}
     known_ids = set(proposal.get("recordings", {})) or {r.pocket_id for r in index.list(unsorted_only=True, limit=100_000)}
     before = [c.model_dump() for c in settings.clients]
     created, updated = [], []
@@ -738,7 +739,7 @@ def apply(settings: Settings, index: Index, edited: list[dict], ignore: dict | N
             if not item.get("existing_client") and item.get("name"):
                 rejected.append(normalize_name(item["name"]))
             continue
-        name = clean_name(settings, item.get("name", ""))
+        name = clean_name(settings, item.get("name", ""), strip_legal=False)  # as reviewed by the user
         if not name:
             continue
         target = settings.find_client(item.get("existing_client") or "") or settings.find_client(name)
@@ -765,7 +766,7 @@ def apply(settings: Settings, index: Index, edited: list[dict], ignore: dict | N
                 target.pocket_tags.append(str(t))
         proj_of: dict[str, str] = {}
         for p in item.get("projects") or []:
-            pname = clean_name(settings, p.get("name", ""))
+            pname = clean_name(settings, p.get("name", ""), strip_legal=False)
             if not pname:
                 continue
             existing_p = target.find_project(pname)
@@ -799,7 +800,8 @@ def apply(settings: Settings, index: Index, edited: list[dict], ignore: dict | N
     for c in created + updated:
         memory.get("suggestions", {}).pop(normalize_name(c), None)
     save_memory(settings, memory)
-    _proposal_path(settings).unlink(missing_ok=True)
+    if clear_proposal:
+        _proposal_path(settings).unlink(missing_ok=True)
     left = len(index.list(unsorted_only=True, limit=100_000))
     return {"created": created, "updated": updated, "moved": result["moved"], "undo_id": result["log_id"], "unsorted_left": left}
 

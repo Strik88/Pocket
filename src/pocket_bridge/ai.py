@@ -38,17 +38,40 @@ UNTRUSTED_NOTE = (
 
 
 class AIError(Exception):
-    pass
+    """code: stable identifier the web app translates (claude_key_invalid, claude_no_credit, ...)."""
+
+    def __init__(self, message: str = "", code: str = "claude_error"):
+        super().__init__(message)
+        self.code = code
 
 
 class AITruncated(AIError):
     """The answer hit max_tokens; the caller may split the work and retry."""
 
+    def __init__(self, message: str = "Antwoord te lang / answer too long"):
+        super().__init__(message, "claude_truncated")
+
+
+def _wrap(exc: Exception) -> AIError:
+    """Turn an Anthropic SDK error into an AIError with a code and a readable message."""
+    text = str(exc)
+    if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
+        return AIError("Anthropic API-key ongeldig / invalid key", "claude_key_invalid")
+    if "credit balance" in text.lower():
+        return AIError("Geen tegoed op je Anthropic-account / no credit on your Anthropic account", "claude_no_credit")
+    if isinstance(exc, anthropic.RateLimitError) or getattr(exc, "status_code", 0) in (429, 529):
+        return AIError("Claude is even druk, probeer het zo opnieuw / Claude is busy, try again shortly", "claude_busy")
+    if isinstance(exc, anthropic.APIConnectionError):
+        return AIError("Geen verbinding met Claude / cannot reach Claude", "claude_offline")
+    if isinstance(exc, anthropic.NotFoundError):
+        return AIError("Onbekend Claude-model / unknown Claude model", "claude_model")
+    return AIError(f"Claude-fout / Claude error: {text[:300]}", "claude_error")
+
 
 def make_client(settings: Settings) -> anthropic.Anthropic:
     key = settings.anthropic_api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
-        raise AIError("Geen Anthropic API-key ingesteld / no Anthropic API key configured")
+        raise AIError("Geen Anthropic API-key ingesteld / no Anthropic API key configured", "claude_no_key")
     return anthropic.Anthropic(api_key=key)
 
 
@@ -81,12 +104,10 @@ def _call_text(settings: Settings, system: str, prompt: str, effort: str = "medi
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
             final = stream.get_final_message()
-    except anthropic.AuthenticationError as exc:
-        raise AIError("Anthropic API-key ongeldig / invalid key") from exc
     except anthropic.APIError as exc:
-        raise AIError(f"Claude-fout / Claude error: {exc}") from exc
+        raise _wrap(exc) from exc
     if final.stop_reason == "refusal":
-        raise AIError("Claude weigerde dit verzoek / Claude declined this request")
+        raise AIError("Claude weigerde dit verzoek / Claude declined this request", "claude_refused")
     return "".join(b.text for b in final.content if b.type == "text").strip()
 
 
@@ -116,29 +137,30 @@ def _call_parsed(
             messages=[{"role": "user", "content": prompt}],
             **kwargs,
         )
-    except anthropic.AuthenticationError as exc:
-        raise AIError("Anthropic API-key ongeldig / invalid key") from exc
     except anthropic.APIError as exc:
-        raise AIError(f"Claude-fout / Claude error: {exc}") from exc
+        raise _wrap(exc) from exc
     if usage is not None and getattr(resp, "usage", None) is not None:
         usage.append({"model": resp.model, "input": resp.usage.input_tokens or 0, "output": resp.usage.output_tokens or 0})
     if resp.stop_reason == "refusal":
         return None
     if resp.stop_reason == "max_tokens":
-        raise AITruncated("Antwoord te lang / answer too long")
+        raise AITruncated()
     return resp.parsed_output
 
 
 def check_key(settings: Settings) -> str:
     client = make_client(settings)
-    resp = client.beta.messages.create(
-        model=settings.claude_model,
-        max_tokens=64,
-        output_config={"effort": "low"},
-        betas=FALLBACK_BETAS,
-        fallbacks="default",
-        messages=[{"role": "user", "content": "Reply with just: OK"}],
-    )
+    try:
+        resp = client.beta.messages.create(
+            model=settings.claude_model,
+            max_tokens=64,
+            output_config={"effort": "low"},
+            betas=FALLBACK_BETAS,
+            fallbacks="default",
+            messages=[{"role": "user", "content": "Reply with just: OK"}],
+        )
+    except anthropic.APIError as exc:
+        raise _wrap(exc) from exc
     return "".join(b.text for b in resp.content if b.type == "text").strip() or "OK"
 
 
@@ -385,12 +407,10 @@ def ask_stream(settings: Settings, question: str, sources: list[dict], history: 
             for text in stream.text_stream:
                 yield {"type": "text", "text": text}
             final = stream.get_final_message()
-    except anthropic.AuthenticationError as exc:
-        raise AIError("Anthropic API-key ongeldig / invalid key") from exc
     except anthropic.APIError as exc:
-        raise AIError(f"Claude-fout / Claude error: {exc}") from exc
+        raise _wrap(exc) from exc
     if final.stop_reason == "refusal":
-        yield {"type": "done", "blocks": [{"text": "Claude kon deze vraag niet beantwoorden. / Claude declined to answer.", "citations": []}]}
+        yield {"type": "refused"}
         return
     blocks = []
     for b in final.content:

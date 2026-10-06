@@ -54,11 +54,9 @@ class Settings(BaseModel):
     # Who the user is: used to keep their own company out of client proposals
     user_name: str = ""
     own_domains: list[str] = Field(default_factory=list)
-    ignored_client_names: list[str] = Field(default_factory=list)
 
-    # Demo mode: fictional sample conversations in a separate folder
+    # Demo mode: fictional sample conversations in a separate folder (see demo.py)
     demo_mode: bool = False
-    demo_previous_data_dir: str = ""
 
     pocket_api_key: str = ""
     pocket_base_url: str = DEFAULT_POCKET_BASE_URL
@@ -76,8 +74,7 @@ class Settings(BaseModel):
     # Claude (optional)
     anthropic_api_key: str = ""
     claude_model: str = DEFAULT_MODEL
-    ai_classify: bool = True
-    ai_may_create_clients: bool = False
+    ai_classify: bool = True  # Claude sorts what the rules miss (only into existing clients)
     ai_client_status: bool = True  # Claude keeps a "current status" section in each dossier
     keyword_min_hits: int = 2
 
