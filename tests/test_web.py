@@ -10,7 +10,9 @@ from .conftest import make_transport
 
 
 def client():
-    return TestClient(webapp.app, base_url="http://127.0.0.1:8765")
+    from pocket_bridge.web import session
+
+    return TestClient(webapp.app, base_url="http://127.0.0.1:8765", headers=session.headers())
 
 
 def test_state_hides_keys(settings):
@@ -73,7 +75,7 @@ def test_connect_claude_desktop_merges_and_backs_up(settings, tmp_path, monkeypa
 def test_index_page_served(settings):
     r = client().get("/")
     assert r.status_code == 200 and "Pocket Bridge" in r.text
-    assert client().get("/static/app.js").status_code == 200
+    assert client().get("/static/js/main.js").status_code == 200
 
 
 def test_actions_endpoints(settings):

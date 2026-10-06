@@ -101,3 +101,38 @@ def connect_claude_desktop() -> Path:
 
 def manual_snippet() -> str:
     return json.dumps({"mcpServers": {SERVER_NAME: server_entry()}}, indent=2)
+
+
+def desktop_installed() -> bool:
+    """Best guess whether Claude Desktop is on this computer (app folder or its settings folder)."""
+    if claude_desktop_config_path().parent.exists():
+        return True
+    if sys.platform == "darwin":
+        return any(p.exists() for p in (Path("/Applications/Claude.app"), Path.home() / "Applications" / "Claude.app"))
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return (local / "AnthropicClaude").exists() or any((local / "Packages").glob("Claude_*"))
+    return False
+
+
+def _heartbeat_path() -> Path:
+    from .config import config_dir
+
+    return config_dir() / "mcp-heartbeat.json"
+
+
+def heartbeat(tool: str = "") -> None:
+    """Called by the MCP server: proves Claude Desktop really started it (shown in the app)."""
+    try:
+        p = _heartbeat_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"at": datetime.now().isoformat(timespec="seconds"), "tool": tool}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def last_seen() -> str:
+    try:
+        return json.loads(_heartbeat_path().read_text(encoding="utf-8")).get("at", "")
+    except (OSError, ValueError):
+        return ""

@@ -12,10 +12,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import socket
 import sys
 import threading
 import webbrowser
+
+
+def quiet_libraries() -> None:
+    """httpx logs every URL at INFO, including secret calendar links: keep those out of the logs."""
+    for name in ("httpx", "httpcore", "mcp", "uvicorn.access"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _free_port(preferred: int) -> int:
@@ -33,19 +40,21 @@ def _already_running(args: argparse.Namespace) -> bool:
     if port:
         print(f"Pocket Bridge draait al / is already running: http://127.0.0.1:{port}")
         if not args.no_browser:
-            webbrowser.open(f"http://127.0.0.1:{port}")
+            from .web import session
+
+            webbrowser.open(session.login_url(port))
         return True
     return False
 
 
 def cmd_tray(args: argparse.Namespace) -> None:
     from . import tray
-    from .config import config_dir
+    from .config import config_dir, ensure_private_dir
 
     if _already_running(args):
         return
-    log_file = config_dir() / "pocket-bridge.log"
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file = ensure_private_dir(config_dir()) / "pocket-bridge.log"
+    os.close(os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))  # owner-only from the start
     handler = logging.FileHandler(log_file, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.getLogger().addHandler(handler)
@@ -60,9 +69,11 @@ def cmd_web(args: argparse.Namespace) -> None:
 
     if _already_running(args):
         return
+    from .web import session
+
     port = _free_port(args.port)
     instance.register(port)
-    url = f"http://127.0.0.1:{port}"
+    url = session.login_url(port)
     print(f"\n  Pocket Bridge draait op / is running at: {url}\n  Sluit dit venster om te stoppen. / Close this window to stop.\n")
     if not args.no_browser:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
@@ -136,6 +147,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(levelname)s %(message)s")
+    quiet_libraries()
     {"web": cmd_web, "tray": cmd_tray, "mcp": cmd_mcp, "sync": cmd_sync, "connect": cmd_connect, "rebuild": cmd_rebuild}[args.cmd](args)
 
 

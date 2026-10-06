@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -34,6 +35,7 @@ from .storage import (
 )
 
 log = logging.getLogger(__name__)
+_SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _thread_lock = threading.Lock()
 
 
@@ -46,7 +48,7 @@ class SyncResult:
     skipped: int = 0
     pending: int = 0  # still processing in Pocket; retried next time
     errors: list[str] = field(default_factory=list)
-    new_clients: list[str] = field(default_factory=list)
+    suggested_clients: list[str] = field(default_factory=list)
     message: str = ""
 
     def as_dict(self) -> dict:
@@ -112,13 +114,18 @@ def run_sync(
     full: bool = False,
     progress: Callable[[str], None] | None = None,
     transport: httpx.BaseTransport | None = None,
+    allow_ai: bool = True,
 ) -> SyncResult:
     settings = settings or load_settings()
-    say = progress or (lambda msg: log.info(msg))
+    say = progress or (lambda msg: log.debug(msg))  # titles stay out of the log file
     result = SyncResult(started=datetime.now().isoformat(timespec="seconds"))
     if not settings.pocket_ready:
         result.message = t(settings.language, "sync_no_key")
         return result
+    if settings.demo_mode and transport is None:
+        from . import demo
+
+        transport = demo.transport()
 
     if not _thread_lock.acquire(blocking=False):
         result.message = t(settings.language, "sync_busy")
@@ -129,7 +136,7 @@ def run_sync(
         result.message = t(settings.language, "sync_busy")
         return result
     try:
-        _do_sync(settings, full, say, result, transport)
+        _do_sync(settings, full, say, result, transport, allow_ai)
     finally:
         lock.release()
         _thread_lock.release()
@@ -137,7 +144,7 @@ def run_sync(
     return result
 
 
-def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport) -> None:
+def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport, allow_ai: bool = True) -> None:
     state = load_state(settings)
     known: dict = state.setdefault("recordings", {})
     speakers: dict = state.setdefault("speakers", {})
@@ -158,7 +165,9 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport)
             say(t(settings.language, "sync_found", n=len(items)))
             for n, item in enumerate(items, 1):
                 rid = str(item.get("id") or "")
-                if not rid:
+                if not _SAFE_ID.fullmatch(rid):  # ids end up in file names: never trust them blindly
+                    if rid:
+                        result.errors.append(f"skipped recording with an unexpected id ({len(rid)} characters)")
                     continue
                 updated = str(item.get("updated_at") or item.get("updatedAt") or "")
                 existing = index.get(rid)
@@ -170,6 +179,9 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport)
                 except Exception as exc:  # keep going; one bad recording should not stop the rest
                     result.errors.append(f"{item.get('title') or rid}: {exc}")
                     continue
+                if rec.id != rid:
+                    result.errors.append(f"{item.get('title') or rid}: id mismatch")
+                    continue
                 if not rec.has_transcript:
                     result.pending += 1
                     continue
@@ -179,6 +191,8 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport)
                     (raw_dir / f"{rid}.json").write_text(json.dumps(rec.raw, indent=1, ensure_ascii=False), encoding="utf-8")
 
                 meeting = meetings.match_event(settings, rec.recorded_at, rec.duration_seconds) if settings.calendar_urls else None
+                if settings.demo_mode:
+                    meeting = _demo_meeting(rid, rec)
                 done_actions: set[str] = set()
                 if existing:
                     path = Path(existing.path)
@@ -190,12 +204,13 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport)
                         meeting = {"title": old.meta.get("meeting"), "attendees": old.meta.get("attendees") or []}
                     result.updated += 1
                 else:
-                    decision = classifier.classify(settings, rec, meeting)
+                    decision = classifier.classify(settings, rec, meeting, allow_ai=allow_ai)
                     client, project, source = decision.client, decision.project, decision.source
-                    if client and not settings.find_client(client):
-                        settings.clients.append(Client(name=client))
-                        save_settings(settings)
-                        result.new_clients.append(client)
+                    if decision.suggested_client:
+                        from .discovery import add_suggestion
+
+                        add_suggestion(settings, decision.suggested_client, rid, source)
+                        result.suggested_clients.append(decision.suggested_client)
                     path = unique_path(target_path(settings, rec, client, project))
                     result.new += 1
                 meeting_dict = meeting.as_dict() if hasattr(meeting, "as_dict") else meeting
@@ -222,6 +237,17 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport)
     if not result.message:
         result.message = t(settings.language, "sync_done", new=result.new, updated=result.updated, pending=result.pending)
     say(result.message)
+
+
+def _demo_meeting(rid: str, rec):
+    from . import demo
+
+    m = demo.meeting_for(rid)
+    if not m or not rec.recorded_at:
+        return None
+    emails = [e.group(0).lower() for a in m.get("attendees", []) for e in [re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", a)] if e]
+    end = rec.recorded_at + timedelta(seconds=rec.duration_seconds or 1800)
+    return meetings.Event(title=m.get("title", ""), start=rec.recorded_at, end=end, attendees=m.get("attendees", []), emails=emails)
 
 
 def after_change(settings: Settings, index: Index, clients: set[str], say=lambda m: None) -> None:
@@ -257,7 +283,50 @@ def _current_source(path: Path) -> str:
 # -- Manual changes -------------------------------------------------------------
 
 
-def assign(settings: Settings, ref: str, client: str | None, project: str | None = None) -> Path:
+def ensure_client(settings: Settings, client: str | None, project: str | None) -> tuple[str | None, str | None]:
+    """Normalise names to the configured client/project, creating them if new. Caller saves settings."""
+    from .discovery import clean_name
+
+    client = client.strip() if client else None
+    project = project.strip() if (project and client) else None
+    if client:
+        cfg = settings.find_client(client)
+        if not cfg:
+            name = clean_name(settings, client, strip_legal=False)
+            if not name:
+                raise ValueError(f"invalid client name: {client}")
+            cfg = settings.find_client(name) or Client(name=name)
+            if cfg not in settings.clients:
+                settings.clients.append(cfg)
+        client = cfg.name
+        if project:
+            p = cfg.find_project(project)
+            if p:
+                project = p.name
+            else:
+                name = clean_name(settings, project, strip_legal=False)
+                if not name:
+                    raise ValueError(f"invalid project name: {project}")
+                cfg.projects.append(Project(name=name))
+                project = name
+    return client, project
+
+
+def move_row(settings: Settings, index: Index, row, client: str | None, project: str | None, source: str) -> Path:
+    """Move one indexed recording to a client/project folder and record why. No dossier rebuild."""
+    old_path = Path(row.path)
+    year = old_path.parent.name
+    target_dir = client_dir(settings, client, project) / year
+    new_path = old_path if old_path.parent == target_dir else unique_path(target_dir / old_path.name)
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    if new_path != old_path:
+        shutil.move(str(old_path), str(new_path))
+    set_location(new_path, client, project, source)
+    index.upsert_file(new_path)
+    return new_path
+
+
+def assign(settings: Settings, ref: str, client: str | None, project: str | None = None, source: str = "manual") -> Path:
     """Move a recording to another client's (project) folder, or to Unsorted with client=None."""
     index = Index(settings)
     try:
@@ -265,30 +334,10 @@ def assign(settings: Settings, ref: str, client: str | None, project: str | None
         row = index.find(ref)
         if not row:
             raise ValueError(f"Opname niet gevonden / recording not found: {ref}")
-        client = client.strip() if client else None
-        project = project.strip() if (project and client) else None
+        client, project = ensure_client(settings, client, project)
         if client:
-            cfg = settings.find_client(client)
-            if not cfg:
-                cfg = Client(name=client)
-                settings.clients.append(cfg)
-            client = cfg.name
-            if project:
-                p = cfg.find_project(project)
-                if p:
-                    project = p.name
-                else:
-                    cfg.projects.append(Project(name=project))
             save_settings(settings)
-        old_path = Path(row.path)
-        year = old_path.parent.name
-        target_dir = client_dir(settings, client, project) / year
-        new_path = old_path if old_path.parent == target_dir else unique_path(target_dir / old_path.name)
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        if new_path != old_path:
-            shutil.move(str(old_path), str(new_path))
-        set_location(new_path, client, project, "manual")
-        index.upsert_file(new_path)
+        new_path = move_row(settings, index, row, client, project, source)
         for c in {row.client, client} - {None}:
             build_dossier(settings, c, index.list(client=c, limit=100_000))
         return new_path
@@ -354,7 +403,8 @@ class AutoSync:
         self._stop.wait(5)  # let the app start first
         while not self._stop.is_set():
             settings = load_settings()
-            if settings.auto_sync and settings.pocket_ready:
+            # Not before onboarding is done (clients first, then sorting) and never in demo mode.
+            if settings.auto_sync and settings.pocket_ready and settings.onboarding.completed and not settings.demo_mode:
                 try:
                     res = run_sync(settings)
                     if self.on_result:

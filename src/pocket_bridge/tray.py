@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 import uvicorn
 
@@ -21,20 +22,18 @@ from .config import load_settings
 log = logging.getLogger(__name__)
 
 LABELS = {
-    "nl": {"open": "Open Pocket Bridge", "sync": "Nu synchroniseren", "autostart": "Start bij inloggen", "quit": "Afsluiten", "last": "Laatste sync"},
-    "en": {"open": "Open Pocket Bridge", "sync": "Sync now", "autostart": "Start at login", "quit": "Quit", "last": "Last sync"},
+    "nl": {"open": "Open Pocket Bridge", "sync": "Nu ophalen", "autostart": "Start bij inloggen", "quit": "Afsluiten", "last": "Laatst opgehaald", "setup": "Rond eerst de installatie af in Pocket Bridge."},
+    "en": {"open": "Open Pocket Bridge", "sync": "Fetch now", "autostart": "Start at login", "quit": "Quit", "last": "Last fetched", "setup": "Finish the setup in Pocket Bridge first."},
 }
 
 
 def _icon_image():
-    from PIL import Image, ImageDraw
+    """The Striks bowtie (bundled PNG), shown in the menu bar / system tray."""
+    from PIL import Image
 
-    size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse((4, 4, size - 4, size - 4), fill=(232, 89, 12, 255))
-    d.ellipse((22, 22, size - 22, size - 22), fill=(255, 255, 255, 255))
-    return img
+    path = Path(__file__).parent / "web" / "static" / "img" / "striks-icon-color.png"
+    img = Image.open(path).convert("RGBA")
+    return img.resize((64, 64), Image.LANCZOS)
 
 
 def _start_server(port: int) -> uvicorn.Server:
@@ -50,11 +49,13 @@ def _start_server(port: int) -> uvicorn.Server:
 
 
 def run(port: int, open_browser: bool = True) -> None:
+    from .web import session
+
     url = f"http://127.0.0.1:{port}"
     server = _start_server(port)
     instance.register(port)
     if open_browser:
-        webbrowser.open(url)
+        webbrowser.open(session.login_url(port))
 
     try:
         import pystray
@@ -80,8 +81,8 @@ def run(port: int, open_browser: bool = True) -> None:
         import httpx
 
         try:
-            httpx.post(f"{url}/api/sync", timeout=5)
-            icon.notify(L["sync"], "Pocket Bridge")
+            r = httpx.post(f"{url}/api/sync", timeout=5, headers=session.headers())
+            icon.notify(L["setup"] if r.status_code == 409 else L["sync"], "Pocket Bridge")
         except Exception:
             log.exception("sync from tray failed")
 
@@ -94,14 +95,14 @@ def run(port: int, open_browser: bool = True) -> None:
         icon.stop()
 
     menu = pystray.Menu(
-        pystray.MenuItem(L["open"], lambda *_: webbrowser.open(url), default=True),
+        pystray.MenuItem(L["open"], lambda *_: webbrowser.open(session.login_url(port)), default=True),
         pystray.MenuItem(L["sync"], do_sync),
         pystray.MenuItem(last_sync_text, None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(L["autostart"], toggle_autostart, checked=lambda _i: autostart.is_enabled()),
         pystray.MenuItem(L["quit"], quit_app),
     )
-    icon = pystray.Icon("pocket-bridge", _icon_image(), "Pocket Bridge", menu)
+    icon = pystray.Icon("pocket-bridge", _icon_image(), "Pocket Bridge by Striks", menu)
 
     if sys.platform == "darwin":
         try:  # menu-bar only, no Dock icon

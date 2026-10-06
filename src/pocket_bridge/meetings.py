@@ -13,13 +13,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import icalendar
 import recurring_ical_events
 
-from .config import Settings
-from .storage import meta_dir
+from .config import Settings, config_dir, ensure_private_dir
 
 log = logging.getLogger(__name__)
 CACHE_SECONDS = 30 * 60
@@ -49,10 +49,26 @@ def _normalise_url(url: str) -> str:
     return "https://" + url[len("webcal://") :] if url.lower().startswith("webcal://") else url
 
 
+def _cache_dir() -> Path:
+    # Outside the conversations folder (often in iCloud/OneDrive) and owner-only: the feed is private.
+    return ensure_private_dir(config_dir() / "cache" / "calendar")
+
+
 def _cache_file(settings: Settings, url: str) -> Path:
-    d = meta_dir(settings) / "calendar"
-    d.mkdir(exist_ok=True)
-    return d / (hashlib.sha256(url.encode()).hexdigest()[:16] + ".ics")
+    return _cache_dir() / (hashlib.sha256(url.encode()).hexdigest()[:16] + ".ics")
+
+
+def label(url: str) -> str:
+    """A safe name for a secret calendar link in logs and messages: host plus a short hash."""
+    return f"{urlsplit(url).hostname or 'calendar'}#{hashlib.sha256(url.encode()).hexdigest()[:8]}"
+
+
+def prune_cache(settings: Settings) -> None:
+    """Remove cached feeds of links the user deleted."""
+    keep = {_cache_file(settings, u).name for u in settings.calendar_urls if u.strip()}
+    for f in _cache_dir().glob("*.ics"):
+        if f.name not in keep:
+            f.unlink(missing_ok=True)
 
 
 def fetch(settings: Settings, url: str, force: bool = False, transport: httpx.BaseTransport | None = None) -> bytes:
@@ -70,7 +86,7 @@ def fetch(settings: Settings, url: str, force: bool = False, transport: httpx.Ba
         return data
     except Exception:
         if cache.exists():  # offline: use the last copy
-            log.warning("calendar fetch failed, using cached copy", exc_info=True)
+            log.warning("calendar %s unreachable, using cached copy", label(url))
             return cache.read_bytes()
         raise
 
@@ -140,7 +156,7 @@ def events_around(settings: Settings, when: datetime, hours: float = 12, transpo
         try:
             events += parse_events(fetch(settings, url, transport=transport), start, end)
         except Exception as exc:
-            log.warning("calendar %s: %s", url[:40], exc)
+            log.warning("calendar %s: %s", label(url), type(exc).__name__)
     return events
 
 
@@ -169,9 +185,9 @@ def test_urls(settings: Settings, transport=None) -> list[dict]:
     for url in settings.calendar_urls:
         try:
             events = parse_events(fetch(settings, url, force=True, transport=transport), now - timedelta(days=60), now + timedelta(days=30))
-            results.append({"url": url[:60] + ("…" if len(url) > 60 else ""), "ok": True, "events": len(events)})
+            results.append({"url": label(url), "ok": True, "events": len(events)})
         except Exception as exc:
-            results.append({"url": url[:60], "ok": False, "error": str(exc)})
+            results.append({"url": label(url), "ok": False, "error": type(exc).__name__})
     return results
 
 

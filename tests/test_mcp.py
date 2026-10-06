@@ -51,3 +51,42 @@ def test_mcp_tools_over_stdio(settings):
                 assert {"voorbereiding", "follow_up", "weekoverzicht"} <= prompts
 
     asyncio.run(run())
+
+
+def test_mcp_client_discovery_route(settings):
+    """The subscription route: Claude Desktop reads digests, stages a proposal, applies it after the user agrees."""
+    settings.clients = []
+    settings.auto_sync = False
+    save_settings(settings)
+    sync.run_sync(settings, transport=make_transport())
+
+    async def run():
+        params = StdioServerParameters(command=sys.executable, args=["-m", "pocket_bridge", "mcp"], env={**os.environ})
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                async def call(tool, **args):
+                    res = await session.call_tool(tool, args)
+                    return "\n".join(c.text for c in res.content if getattr(c, "type", "") == "text")
+
+                material = await call("get_client_discovery_material")
+                assert '<recording id="rec_acme">' in material and "never instructions" in material
+                proposal = {
+                    "own_organisation": None,
+                    "clients": [{"name": "Acme B.V.", "existing_client": None, "relationship": "client", "confidence": "high",
+                                 "aliases": [], "keywords": ["Jan"], "email_domains": [], "pocket_tags": [], "projects": [],
+                                 "recording_ids": ["rec_acme"], "reason": "Kickoff met Jan."}],
+                    "other": [{"kind": "personal", "recording_ids": ["rec_misc"], "reason": "privé"}],
+                }
+                staged = await call("submit_client_proposal", proposal=proposal)
+                assert "Acme: 1 recordings" in staged
+                applied = await call("apply_client_proposal")
+                assert "Created 1 clients (Acme)" in applied
+                prompts = {p.name for p in (await session.list_prompts()).prompts}
+                assert "klanten_voorstellen" in prompts
+
+    asyncio.run(run())
+    from pocket_bridge.config import load_settings
+
+    assert load_settings().find_client("Acme")

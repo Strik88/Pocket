@@ -262,6 +262,7 @@ def test_briefing_and_followup(settings, monkeypatch):
 
 def test_client_status_in_dossier(settings, monkeypatch):
     settings.anthropic_api_key = "sk-test"
+    settings.ai_client_status = True  # opt-in: sends recent conversations to Claude
     save_settings(settings)
     monkeypatch.setattr(ai, "client_status", lambda s, c, t, previous="": f"- Fase: offerte ({c})")
     sync.run_sync(load_settings(), transport=make_transport())
