@@ -46,7 +46,7 @@ class SyncResult:
     skipped: int = 0
     pending: int = 0  # still processing in Pocket; retried next time
     errors: list[str] = field(default_factory=list)
-    new_clients: list[str] = field(default_factory=list)
+    suggested_clients: list[str] = field(default_factory=list)
     message: str = ""
 
     def as_dict(self) -> dict:
@@ -112,6 +112,7 @@ def run_sync(
     full: bool = False,
     progress: Callable[[str], None] | None = None,
     transport: httpx.BaseTransport | None = None,
+    allow_ai: bool = True,
 ) -> SyncResult:
     settings = settings or load_settings()
     say = progress or (lambda msg: log.info(msg))
@@ -129,7 +130,7 @@ def run_sync(
         result.message = t(settings.language, "sync_busy")
         return result
     try:
-        _do_sync(settings, full, say, result, transport)
+        _do_sync(settings, full, say, result, transport, allow_ai)
     finally:
         lock.release()
         _thread_lock.release()
@@ -137,7 +138,7 @@ def run_sync(
     return result
 
 
-def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport) -> None:
+def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport, allow_ai: bool = True) -> None:
     state = load_state(settings)
     known: dict = state.setdefault("recordings", {})
     speakers: dict = state.setdefault("speakers", {})
@@ -190,12 +191,13 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport)
                         meeting = {"title": old.meta.get("meeting"), "attendees": old.meta.get("attendees") or []}
                     result.updated += 1
                 else:
-                    decision = classifier.classify(settings, rec, meeting)
+                    decision = classifier.classify(settings, rec, meeting, allow_ai=allow_ai)
                     client, project, source = decision.client, decision.project, decision.source
-                    if client and not settings.find_client(client):
-                        settings.clients.append(Client(name=client))
-                        save_settings(settings)
-                        result.new_clients.append(client)
+                    if decision.suggested_client:
+                        from .discovery import add_suggestion
+
+                        add_suggestion(settings, decision.suggested_client, rid, source)
+                        result.suggested_clients.append(decision.suggested_client)
                     path = unique_path(target_path(settings, rec, client, project))
                     result.new += 1
                 meeting_dict = meeting.as_dict() if hasattr(meeting, "as_dict") else meeting
@@ -257,7 +259,40 @@ def _current_source(path: Path) -> str:
 # -- Manual changes -------------------------------------------------------------
 
 
-def assign(settings: Settings, ref: str, client: str | None, project: str | None = None) -> Path:
+def ensure_client(settings: Settings, client: str | None, project: str | None) -> tuple[str | None, str | None]:
+    """Normalise names to the configured client/project, creating them if new. Caller saves settings."""
+    client = client.strip() if client else None
+    project = project.strip() if (project and client) else None
+    if client:
+        cfg = settings.find_client(client)
+        if not cfg:
+            cfg = Client(name=client)
+            settings.clients.append(cfg)
+        client = cfg.name
+        if project:
+            p = cfg.find_project(project)
+            if p:
+                project = p.name
+            else:
+                cfg.projects.append(Project(name=project))
+    return client, project
+
+
+def move_row(settings: Settings, index: Index, row, client: str | None, project: str | None, source: str) -> Path:
+    """Move one indexed recording to a client/project folder and record why. No dossier rebuild."""
+    old_path = Path(row.path)
+    year = old_path.parent.name
+    target_dir = client_dir(settings, client, project) / year
+    new_path = old_path if old_path.parent == target_dir else unique_path(target_dir / old_path.name)
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    if new_path != old_path:
+        shutil.move(str(old_path), str(new_path))
+    set_location(new_path, client, project, source)
+    index.upsert_file(new_path)
+    return new_path
+
+
+def assign(settings: Settings, ref: str, client: str | None, project: str | None = None, source: str = "manual") -> Path:
     """Move a recording to another client's (project) folder, or to Unsorted with client=None."""
     index = Index(settings)
     try:
@@ -265,30 +300,10 @@ def assign(settings: Settings, ref: str, client: str | None, project: str | None
         row = index.find(ref)
         if not row:
             raise ValueError(f"Opname niet gevonden / recording not found: {ref}")
-        client = client.strip() if client else None
-        project = project.strip() if (project and client) else None
+        client, project = ensure_client(settings, client, project)
         if client:
-            cfg = settings.find_client(client)
-            if not cfg:
-                cfg = Client(name=client)
-                settings.clients.append(cfg)
-            client = cfg.name
-            if project:
-                p = cfg.find_project(project)
-                if p:
-                    project = p.name
-                else:
-                    cfg.projects.append(Project(name=project))
             save_settings(settings)
-        old_path = Path(row.path)
-        year = old_path.parent.name
-        target_dir = client_dir(settings, client, project) / year
-        new_path = old_path if old_path.parent == target_dir else unique_path(target_dir / old_path.name)
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        if new_path != old_path:
-            shutil.move(str(old_path), str(new_path))
-        set_location(new_path, client, project, "manual")
-        index.upsert_file(new_path)
+        new_path = move_row(settings, index, row, client, project, source)
         for c in {row.client, client} - {None}:
             build_dossier(settings, c, index.list(client=c, limit=100_000))
         return new_path
@@ -354,7 +369,8 @@ class AutoSync:
         self._stop.wait(5)  # let the app start first
         while not self._stop.is_set():
             settings = load_settings()
-            if settings.auto_sync and settings.pocket_ready:
+            # Not before onboarding is done (clients first, then sorting) and never in demo mode.
+            if settings.auto_sync and settings.pocket_ready and settings.onboarding.completed and not settings.demo_mode:
                 try:
                     res = run_sync(settings)
                     if self.on_result:

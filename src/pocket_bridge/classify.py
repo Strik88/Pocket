@@ -27,6 +27,7 @@ class Decision:
     client: str | None
     project: str | None
     source: str
+    suggested_client: str | None = None  # a possible new client Claude noticed; never created automatically
 
 
 def _count(term: str, text: str) -> int:
@@ -105,15 +106,17 @@ def pick_project(settings: Settings, client: str, rec: Recording, meeting=None) 
     return None
 
 
-def classify(settings: Settings, rec: Recording, meeting=None) -> Decision:
+def classify(settings: Settings, rec: Recording, meeting=None, allow_ai: bool = True) -> Decision:
     client, reason = by_rules(settings, rec, meeting)
     source = f"rule: {reason}" if client else "unsorted"
-    if not client and settings.ai_classify and settings.ai_ready and rec.has_transcript:
+    suggestion = None
+    # Claude only helps when there are clients to choose from (no clients: every call would be wasted money).
+    if not client and allow_ai and settings.clients and settings.ai_classify and settings.ai_ready and rec.has_transcript:
         try:
-            client, reason = ai.classify(settings, rec, meeting)
+            client, reason, suggestion = ai.classify(settings, rec, meeting)
             if client:
                 source = f"claude: {reason}"
         except ai.AIError as exc:
             log.warning("AI classification failed: %s", exc)
     project = pick_project(settings, client, rec, meeting) if client else None
-    return Decision(client, project, source)
+    return Decision(client, project, source, suggestion)

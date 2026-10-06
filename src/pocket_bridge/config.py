@@ -38,8 +38,28 @@ class Client(BaseModel):
         return next((p for p in self.projects if p.name.lower() == low), None)
 
 
+class Onboarding(BaseModel):
+    """Where the user is in the setup flow. Auto-sync waits until setup is completed."""
+
+    step: str = "welcome"
+    completed: bool = False
+    claude_mode: str = ""  # "api" (key in the app), "desktop" (subscription via Claude Desktop) or "none"
+    skipped: list[str] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     language: str = "nl"  # "nl" or "en"
+    onboarding: Onboarding = Field(default_factory=Onboarding)
+
+    # Who the user is: used to keep their own company out of client proposals
+    user_name: str = ""
+    own_domains: list[str] = Field(default_factory=list)
+    ignored_client_names: list[str] = Field(default_factory=list)
+
+    # Demo mode: fictional sample conversations in a separate folder
+    demo_mode: bool = False
+    demo_previous_data_dir: str = ""
+
     pocket_api_key: str = ""
     pocket_base_url: str = DEFAULT_POCKET_BASE_URL
     data_dir: str = ""  # where the Markdown files go
@@ -78,7 +98,7 @@ class Settings(BaseModel):
 
     @property
     def pocket_ready(self) -> bool:
-        return bool(self.pocket_api_key.strip())
+        return bool(self.pocket_api_key.strip()) or self.demo_mode
 
     @property
     def ai_ready(self) -> bool:
@@ -114,7 +134,11 @@ def load_settings() -> Settings:
     if not path.exists():
         return Settings()
     try:
-        return Settings.model_validate_json(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if "onboarding" not in raw and raw.get("pocket_api_key"):
+            # Config from a version before the setup flow existed: the user is already set up.
+            raw["onboarding"] = {"step": "done", "completed": True}
+        return Settings.model_validate(raw)
     except Exception:
         # A broken config should never brick the app; keep a copy and start fresh.
         path.replace(path.with_suffix(".broken.json"))
@@ -125,7 +149,11 @@ def save_settings(settings: Settings) -> None:
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(settings.model_dump(), indent=2, ensure_ascii=False), encoding="utf-8")
+    data = json.dumps(settings.model_dump(), indent=2, ensure_ascii=False).encode("utf-8")
+    # Create the file owner-only from the start (it contains API keys); no window where it is world-readable.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
     if sys.platform != "win32":
-        os.chmod(tmp, 0o600)  # contains API keys
+        os.chmod(tmp, 0o600)  # in case the file already existed with wider permissions
     tmp.replace(path)
