@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -30,6 +30,7 @@ from ..dossier import read_status
 from ..config import Client, Onboarding, config_path, default_data_dir, load_settings, save_settings
 from ..index import Index
 from ..pocket_api import PocketAuthError, PocketClient, PocketError
+from . import session
 from ..storage import parse_markdown, speakers_in
 
 log = logging.getLogger(__name__)
@@ -86,22 +87,68 @@ app = FastAPI(title="Pocket Bridge", docs_url=None, redoc_url=None, lifespan=lif
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
+_SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    ),
+}
+
+LOCKED_PAGE = """<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pocket Bridge by Striks</title><link rel="icon" type="image/png" href="/static/img/striks-icon-color.png">
+<style>body{font-family:system-ui,sans-serif;background:#F7F9FC;color:#1A2B50;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;padding:16px}
+main{background:#fff;border:1px solid #E3E8F0;border-radius:16px;padding:32px;max-width:520px}h1{font-size:1.5rem}p{line-height:1.6;color:#4A5878}</style></head>
+<body><main><img src="/static/img/striks-icon-color.png" alt="" width="48"><h1>Open Pocket Bridge via het icoon</h1>
+<p>Om je gesprekken te beschermen opent Pocket Bridge alleen in de browser die het programma zelf opent. Klik op het Striks-strikje in de menubalk (Mac) of bij de klok (Windows) en kies <b>Open Pocket Bridge</b>, of start het programma opnieuw.</p>
+<p lang="en">To protect your conversations, Pocket Bridge only opens in the browser the program opens itself. Use <b>Open Pocket Bridge</b> in the tray icon menu, or start the program again.</p></main></body></html>"""
+
+
+def _authorised(request: Request) -> bool:
+    return session.valid(request.cookies.get(session.COOKIE)) or session.valid(request.headers.get("x-pocket-bridge-token"))
+
+
 @app.middleware("http")
 async def local_only(request: Request, call_next):
-    """Only answer requests addressed to localhost (blocks DNS-rebinding tricks)."""
-    host = (request.headers.get("host") or "").split(":")[0]
-    if host not in ("127.0.0.1", "localhost"):
+    """Only answer requests addressed to this app on localhost, from its own pages or its own tray icon."""
+    host_header = request.headers.get("host") or ""
+    host, _, port = host_header.partition(":")
+    if host not in ("127.0.0.1", "localhost"):  # blocks DNS rebinding
         return JSONResponse({"detail": "forbidden"}, status_code=403)
-    if request.method != "GET":
-        origin = request.headers.get("origin")
-        if origin and origin.split("://")[-1].split(":")[0] not in ("127.0.0.1", "localhost"):
-            return JSONResponse({"detail": "forbidden"}, status_code=403)
-    return await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/") and path != "/api/ping":
+        if not _authorised(request):
+            return JSONResponse({"detail": {"code": "auth"}}, status_code=401)
+        if request.method != "GET":
+            own = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"} if port else {"http://127.0.0.1", "http://localhost"}
+            origin = request.headers.get("origin")
+            if (origin and origin not in own) or request.headers.get("x-pocket-bridge") != "1":
+                return JSONResponse({"detail": {"code": "forbidden"}}, status_code=403)
+    response = await call_next(request)
+    for k, v in _SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    if path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/")
-def index_page():
+def index_page(request: Request):
+    if not _authorised(request):
+        return HTMLResponse(LOCKED_PAGE, status_code=401)
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/auth")
+def auth(t: str = ""):
+    """The app opens the browser here; the key becomes a cookie and disappears from the address bar."""
+    if not session.valid(t):
+        return HTMLResponse(LOCKED_PAGE, status_code=401)
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(session.COOKIE, session.token(), max_age=400 * 24 * 3600, httponly=True, samesite="strict", path="/")
+    return resp
 
 
 @app.get("/api/ping")
@@ -228,6 +275,8 @@ def update_settings(patch: SettingsPatch):
     s.sync_interval_minutes = max(1, s.sync_interval_minutes)
     s.keyword_min_hits = min(10, max(1, s.keyword_min_hits))
     save_settings(s)
+    if "calendar_urls" in data:
+        meetings.prune_cache(s)
     return get_state()
 
 
@@ -446,7 +495,15 @@ def upsert_client(client: Client, original_name: str = ""):
     client.keywords = [k.strip() for k in client.keywords if k.strip()]
     client.pocket_tags = [k.strip() for k in client.pocket_tags if k.strip()]
     client.email_domains = [k.strip().lstrip("@").lower() for k in client.email_domains if k.strip()]
-    client.projects = [p for p in client.projects if p.name.strip()]
+    projects = []
+    for p in client.projects:
+        pname = discovery.clean_name(s, p.name, strip_legal=False)
+        if pname and pname.lower() not in {x.name.lower() for x in projects}:
+            p.name = pname
+            p.keywords = [k.strip()[:40] for k in p.keywords if k.strip()][:20]
+            projects.append(p)
+    client.projects = projects
+    client.email_domains = [d for d in client.email_domains if discovery.valid_domain(d)]
     target = s.find_client(original_name or client.name)
     if target:
         s.clients[s.clients.index(target)] = client
@@ -884,6 +941,9 @@ def ask(body: Ask):
     finally:
         idx.close()
 
+    history = [{"role": h.get("role"), "content": str(h.get("content", ""))[:20_000]}
+               for h in body.history[-12:] if h.get("role") in ("user", "assistant") and isinstance(h.get("content"), str)]
+
     def events():
         meta = [{k: v for k, v in src.items() if k != "text"} for src in sources]
         yield f"data: {json.dumps({'type': 'sources', 'sources': meta, 'skipped': skipped})}\n\n"
@@ -891,7 +951,7 @@ def ask(body: Ask):
             yield f"data: {json.dumps({'type': 'error', 'code': 'no_sources'})}\n\n"
             return
         try:
-            for event in ai.ask_stream(s, body.question, sources, body.history[-12:]):
+            for event in ai.ask_stream(s, body.question[:4000], sources, history):
                 yield f"data: {json.dumps(event)}\n\n"
         except ai.AIError as exc:
             yield f"data: {json.dumps({'type': 'error', 'code': exc.code, 'error': str(exc)})}\n\n"

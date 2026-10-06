@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -75,7 +77,7 @@ class Settings(BaseModel):
     anthropic_api_key: str = ""
     claude_model: str = DEFAULT_MODEL
     ai_classify: bool = True  # Claude sorts what the rules miss (only into existing clients)
-    ai_client_status: bool = True  # Claude keeps a "current status" section in each dossier
+    ai_client_status: bool = False  # Claude keeps a "current status" in each dossier (sends recent conversations; opt-in)
     keyword_min_hits: int = 2
 
     # Calendar: private iCal links (Google Calendar / Outlook) to match recordings to meetings
@@ -98,8 +100,17 @@ class Settings(BaseModel):
         return bool(self.pocket_api_key.strip()) or self.demo_mode
 
     @property
+    def anthropic_key(self) -> str:
+        """The key Claude features use. A key from the ANTHROPIC_API_KEY environment variable only counts
+        after the user chose "Claude in de app" during setup, so nothing is sent to Claude unasked."""
+        key = self.anthropic_api_key.strip()
+        if not key and self.onboarding.claude_mode == "api":
+            key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        return key
+
+    @property
     def ai_ready(self) -> bool:
-        return bool(self.anthropic_api_key.strip() or os.environ.get("ANTHROPIC_API_KEY"))
+        return bool(self.anthropic_key)
 
     def find_client(self, name: str) -> Client | None:
         low = name.strip().lower()
@@ -114,6 +125,17 @@ def config_dir() -> Path:
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
         return base / "PocketBridge"
     return Path.home() / ".pocket-bridge"
+
+
+def ensure_private_dir(path: Path) -> Path:
+    """Create a folder only the user can open (keys, logs, caches). No-op for permissions on Windows."""
+    path.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+    return path
 
 
 def config_path() -> Path:
@@ -138,19 +160,21 @@ def load_settings() -> Settings:
         return Settings.model_validate(raw)
     except Exception:
         # A broken config should never brick the app; keep a copy and start fresh.
-        path.replace(path.with_suffix(".broken.json"))
+        path.replace(path.with_name(f"config.broken-{int(time.time())}.json"))
         return Settings()
 
 
 def save_settings(settings: Settings) -> None:
     path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    ensure_private_dir(path.parent)
     data = json.dumps(settings.model_dump(), indent=2, ensure_ascii=False).encode("utf-8")
-    # Create the file owner-only from the start (it contains API keys); no window where it is world-readable.
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    if sys.platform != "win32":
-        os.chmod(tmp, 0o600)  # in case the file already existed with wider permissions
-    tmp.replace(path)
+    # A unique temp file per write (the web app and the MCP server may save at the same moment),
+    # created owner-only (mkstemp uses 0600): the API keys are never world-readable, not even briefly.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix="config.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise

@@ -34,6 +34,17 @@ SPEAKER_LINE = re.compile(r"^\*\*(?P<name>[^*\n]+)\*\*(?P<rest>( \(\d\d:\d\d:\d\
 ACTION_LINE = re.compile(r"^(?P<indent>\s*)- \[(?P<mark>[ xX])\] (?P<text>.+)$")
 
 
+def fm_value(v) -> str:
+    """A front-matter value as JSON (valid YAML). Unicode line separators are escaped too, so text from a
+    calendar invite can never start a new front-matter line."""
+    return json.dumps(v, ensure_ascii=False).replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+
+
+def one_line(text) -> str:
+    """Collapse all whitespace (including Unicode line breaks) for text written into a single Markdown line."""
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
 def safe_name(name: str, max_len: int = 80) -> str:
     """A filename that is valid on macOS, Windows and Linux."""
     name = unicodedata.normalize("NFC", name)
@@ -122,14 +133,14 @@ def render_markdown(
     done_actions = done_actions or set()
     fm = {
         "pocket_id": rec.id,
-        "title": rec.title,
+        "title": one_line(rec.title),
         "date": rec.recorded_at.astimezone().isoformat(timespec="minutes") if rec.recorded_at else "",
         "duration_minutes": round(rec.duration_seconds / 60) if rec.duration_seconds else None,
         "client": client or "",
         "project": project or "",
         "client_source": client_source,
-        "meeting": (meeting or {}).get("title", ""),
-        "attendees": (meeting or {}).get("attendees") or [],
+        "meeting": one_line((meeting or {}).get("title", "")),
+        "attendees": [one_line(a) for a in (meeting or {}).get("attendees") or []],
         "tags": rec.tags,
         "recorded_by": rec.recorded_by,
         "language": rec.language,
@@ -140,9 +151,9 @@ def render_markdown(
     for k, v in fm.items():
         if (v is None or v == "" or v == []) and k not in ("client", "project"):  # these two are edited later
             continue
-        lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")  # JSON scalars/lists are valid YAML
+        lines.append(f"{k}: {fm_value(v)}")  # JSON scalars/lists are valid YAML
     lines.append("---")
-    lines.append(f"# {rec.title}")
+    lines.append(f"# {one_line(rec.title)}")
     lines.append("")
     info = []
     if rec.recorded_at:
@@ -153,13 +164,13 @@ def render_markdown(
     if project:
         info.append(f"**{t(lang, 'project')}:** {project}")
     if rec.tags:
-        info.append(f"**Tags:** {', '.join(rec.tags)}")
+        info.append(f"**Tags:** {', '.join(one_line(x) for x in rec.tags)}")
     lines.append(" · ".join(info))
     if meeting:
         lines.append("")
-        lines.append(f"**{t(lang, 'meeting')}:** {meeting.get('title', '')}")
+        lines.append(f"**{t(lang, 'meeting')}:** {one_line(meeting.get('title', ''))}")
         if meeting.get("attendees"):
-            lines.append(f"**{t(lang, 'attendees')}:** {', '.join(meeting['attendees'])}")
+            lines.append(f"**{t(lang, 'attendees')}:** {', '.join(one_line(a) for a in meeting['attendees'])}")
     lines.append("")
     if rec.summary:
         lines += [f"## {t(lang, 'summary')}", "", demote_headings(rec.summary.strip()), ""]
@@ -204,15 +215,17 @@ def split_frontmatter(text: str) -> tuple[dict, str]:
     if text.startswith("---"):
         end = text.find("\n---", 3)
         if end != -1:
-            for line in text[3:end].strip().splitlines():
+            for line in text[3:end].strip().split("\n"):  # not splitlines(): that also splits on U+2028 etc.
                 if ":" not in line:
                     continue
                 k, v = line.split(":", 1)
-                v = v.strip()
+                k, v = k.strip(), v.strip()
+                if k in meta:  # the first occurrence wins
+                    continue
                 try:
-                    meta[k.strip()] = json.loads(v)
+                    meta[k] = json.loads(v)
                 except json.JSONDecodeError:
-                    meta[k.strip()] = v.strip("'\"")
+                    meta[k] = v.strip("'\"")
             body = text[end + 4 :].lstrip("\n")
     return meta, body
 
@@ -255,20 +268,20 @@ def set_location(path: Path, client: str | None, project: str | None, source: st
     """Update client/project in the front matter and the visible info line."""
     text = path.read_text(encoding="utf-8")
     new_lines, in_fm, seen_project = [], False, False
-    for i, line in enumerate(text.splitlines()):
+    for i, line in enumerate(text.rstrip("\n").split("\n")):
         if i == 0 and line == "---":
             in_fm = True
         elif in_fm and line == "---":
             if not seen_project:
-                new_lines.append(f"project: {json.dumps(project or '', ensure_ascii=False)}")
+                new_lines.append(f"project: {fm_value(project or '')}")
             in_fm = False
         elif in_fm and line.startswith("client:"):
-            line = f"client: {json.dumps(client or '', ensure_ascii=False)}"
+            line = f"client: {fm_value(client or '')}"
         elif in_fm and line.startswith("project:"):
-            line = f"project: {json.dumps(project or '', ensure_ascii=False)}"
+            line = f"project: {fm_value(project or '')}"
             seen_project = True
         elif in_fm and line.startswith("client_source:"):
-            line = f"client_source: {json.dumps(source)}"
+            line = f"client_source: {fm_value(one_line(source)[:300])}"
         new_lines.append(line)
     out = []
     done = False
@@ -278,9 +291,9 @@ def set_location(path: Path, client: str | None, project: str | None, source: st
             for item in line.split(" · "):
                 if item.startswith("**Project:**"):
                     continue
-                m = re.match(r"(\*\*(?:Klant|Client):\*\* )", item)
+                m = re.match(r"(\*\*(Klant|Client):\*\* )", item)
                 if m:
-                    item = m.group(1) + (f"[[{client}]]" if client else "—")
+                    item = m.group(1) + (f"[[{client}]]" if client else ("Ongesorteerd" if m.group(2) == "Klant" else "Unsorted"))
                     items.append(item)
                     if project:
                         items.append(f"**Project:** {project}")

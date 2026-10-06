@@ -35,6 +35,7 @@ from .storage import (
 )
 
 log = logging.getLogger(__name__)
+_SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _thread_lock = threading.Lock()
 
 
@@ -116,7 +117,7 @@ def run_sync(
     allow_ai: bool = True,
 ) -> SyncResult:
     settings = settings or load_settings()
-    say = progress or (lambda msg: log.info(msg))
+    say = progress or (lambda msg: log.debug(msg))  # titles stay out of the log file
     result = SyncResult(started=datetime.now().isoformat(timespec="seconds"))
     if not settings.pocket_ready:
         result.message = t(settings.language, "sync_no_key")
@@ -164,7 +165,9 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
             say(t(settings.language, "sync_found", n=len(items)))
             for n, item in enumerate(items, 1):
                 rid = str(item.get("id") or "")
-                if not rid:
+                if not _SAFE_ID.fullmatch(rid):  # ids end up in file names: never trust them blindly
+                    if rid:
+                        result.errors.append(f"skipped recording with an unexpected id ({len(rid)} characters)")
                     continue
                 updated = str(item.get("updated_at") or item.get("updatedAt") or "")
                 existing = index.get(rid)
@@ -175,6 +178,9 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
                     rec = pocket.get_recording(rid)
                 except Exception as exc:  # keep going; one bad recording should not stop the rest
                     result.errors.append(f"{item.get('title') or rid}: {exc}")
+                    continue
+                if rec.id != rid:
+                    result.errors.append(f"{item.get('title') or rid}: id mismatch")
                     continue
                 if not rec.has_transcript:
                     result.pending += 1

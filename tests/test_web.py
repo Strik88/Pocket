@@ -10,7 +10,9 @@ from .conftest import make_transport
 
 
 def client():
-    return TestClient(webapp.app, base_url="http://127.0.0.1:8765")
+    from pocket_bridge.web import session
+
+    return TestClient(webapp.app, base_url="http://127.0.0.1:8765", headers=session.headers())
 
 
 def test_state_hides_keys(settings):

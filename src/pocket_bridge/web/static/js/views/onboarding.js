@@ -203,15 +203,17 @@ async function stepClaude(body) {
     <p class="lead">${esc(t("ob_claude_lead"))}</p>
     <fieldset class="choice" style="border:0;padding:0;margin:20px 0">
       <legend class="sr-only">${esc(t("ob_claude_title"))}</legend>
-      <label class="choice-card">
-        <input type="radio" name="cm" value="api" ${mode === "api" ? "checked" : ""}>
-        <span class="t">${esc(t("ob_claude_a"))} <span class="badge ai">${esc(t("recommended"))}</span></span>
-        <p class="d">${esc(t("ob_claude_a_d"))}</p>
+      <div class="choice-card">
+        <input type="radio" name="cm" value="api" id="cm-api" aria-describedby="cm-api-d" ${mode === "api" ? "checked" : ""}>
+        <label class="t" for="cm-api">${esc(t("ob_claude_a"))} <span class="badge ai">${esc(t("recommended"))}</span></label>
+        <p class="d" id="cm-api-d">${esc(t("ob_claude_a_d"))}</p>
         <div class="more" data-for="api" hidden>
           <ol class="steps-howto">
             <li>${t("ob_claude_a_h1")}</li><li>${esc(t("ob_claude_a_h2"))}</li><li>${esc(t("ob_claude_a_h3"))}</li>
           </ol>
           <div id="akStatus"></div>
+          ${st.settings.anthropic_from_env && !st.ai_ready ? `<div class="msg" id="akEnv">${icon("key-round")}<div><p>${esc(t("ob_claude_env"))}</p>
+            <button class="btn small" type="button" id="akUseEnv">${esc(t("ob_claude_env_use"))}</button></div></div>` : ""}
           <div class="field" id="akField">
             <label for="akKey">${esc(t("ob_claude_a_label"))}</label>
             <div class="row">
@@ -219,23 +221,25 @@ async function stepClaude(body) {
               <button class="btn primary" id="akTest" type="button">${esc(t("ob_pocket_test"))}</button>
             </div>
           </div>
+          <label class="check" style="margin-top:8px"><input type="checkbox" id="akStatusOpt" ${st.settings.ai_client_status ? "checked" : ""}>
+            <span><b>${esc(t("set_status"))}</b><span class="help" style="display:block">${esc(t("set_status_help"))}</span></span></label>
         </div>
-      </label>
-      <label class="choice-card">
-        <input type="radio" name="cm" value="desktop" ${mode === "desktop" ? "checked" : ""}>
-        <span class="t">${esc(t("ob_claude_b"))}</span>
-        <p class="d">${esc(t("ob_claude_b_d"))}</p>
+      </div>
+      <div class="choice-card">
+        <input type="radio" name="cm" value="desktop" id="cm-desktop" aria-describedby="cm-desktop-d" ${mode === "desktop" ? "checked" : ""}>
+        <label class="t" for="cm-desktop">${esc(t("ob_claude_b"))}</label>
+        <p class="d" id="cm-desktop-d">${esc(t("ob_claude_b_d"))}</p>
         <div class="more" data-for="desktop" hidden><div id="dkBox"></div></div>
-      </label>
-      <label class="choice-card">
-        <input type="radio" name="cm" value="none" ${mode === "none" ? "checked" : ""}>
-        <span class="t">${esc(t("ob_claude_c"))}</span>
-        <p class="d">${esc(t("ob_claude_c_d"))}</p>
-      </label>
+      </div>
+      <div class="choice-card">
+        <input type="radio" name="cm" value="none" id="cm-none" aria-describedby="cm-none-d" ${mode === "none" ? "checked" : ""}>
+        <label class="t" for="cm-none">${esc(t("ob_claude_c"))}</label>
+        <p class="d" id="cm-none-d">${esc(t("ob_claude_c_d"))}</p>
+      </div>
     </fieldset>
     <div class="privacy">
       <b>${icon("shield-check")} ${esc(t("ob_claude_privacy"))}</b>
-      <ul><li>${esc(t("ob_claude_privacy1"))}</li><li>${esc(t("ob_claude_privacy2"))}</li><li>${esc(t("ob_claude_privacy3"))}</li></ul>
+      <ul><li>${esc(t("ob_claude_privacy1"))}</li><li>${esc(t("ob_claude_privacy2"))}</li><li>${esc(t("ob_claude_privacy4"))}</li><li>${esc(t("ob_claude_privacy3"))}</li></ul>
     </div>`;
 
   const akOk = () => {
@@ -256,6 +260,19 @@ async function stepClaude(body) {
       else $("#akStatus").innerHTML = `<div class="msg err">${icon("circle-alert")}<p>${esc(t("err_" + (r.code || "claude_error")))}</p></div>`;
     }, { busy: t("testing") });
   };
+  $("#akUseEnv")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    run(e.currentTarget, async () => {
+      await api("/api/onboarding", { method: "POST", body: { claude_mode: "api" } });
+      const r = await api("/api/test-anthropic", { method: "POST", body: { key: "" } });
+      await refresh();
+      if (r.ok) { $("#akEnv")?.remove(); akOk(); announce(t("ob_claude_a_ok")); }
+      else $("#akStatus").innerHTML = `<div class="msg err">${icon("circle-alert")}<p>${esc(t("err_" + (r.code || "claude_error")))}</p></div>`;
+    }, { busy: t("testing") });
+  });
+  $("#akStatusOpt").addEventListener("change", (e) => {
+    api("/api/settings", { method: "POST", body: { ai_client_status: e.target.checked } }).then(refresh).catch((err) => toast(errText(err), { type: "error" }));
+  });
   $("#akKey").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#akTest").click(); } });
   renderDesktopBox($("#dkBox"));
 
@@ -265,6 +282,12 @@ async function stepClaude(body) {
     setNextEnabled(!!v);
   };
   $$("input[name=cm]", body).forEach((r) => r.addEventListener("change", sync));
+  // The whole card selects its option, except clicks on fields and buttons inside it
+  $$(".choice-card", body).forEach((card) => card.addEventListener("click", (e) => {
+    if (e.target.closest("input, button, a, label, select, textarea")) return;
+    const radio = $("input[name=cm]", card);
+    if (!radio.checked) { radio.checked = true; sync(); }
+  }));
   sync();
   // Save the choice when moving on
   const nextBtn = $("#obNext");
@@ -482,6 +505,8 @@ async function stepExtras(body) {
       <span><span class="label">${esc(t("set_auto_sync"))}</span><span class="help">${esc(t("set_auto_sync_help", { n: s.sync_interval_minutes }))}</span></span></label>
     <label class="switch"><input type="checkbox" role="switch" id="exStart" ${S.state.autostart ? "checked" : ""} ${demo ? "disabled" : ""}>
       <span><span class="label">${esc(t("set_autostart"))}</span><span class="help">${esc(t("set_autostart_help"))}</span></span></label>
+    ${S.state.ai_ready ? `<label class="switch"><input type="checkbox" role="switch" id="exStatus" ${s.ai_client_status ? "checked" : ""}>
+      <span><span class="label">${esc(t("set_status"))}</span><span class="help">${esc(t("set_status_help"))}</span></span></label>` : ""}
     <label class="switch"><input type="checkbox" role="switch" id="exSem" ${s.semantic_search ? "checked" : ""}>
       <span><span class="label">${esc(t("set_semantic"))}</span><span class="help">${esc(t("set_semantic_help"))}</span></span></label>
     <details style="margin-top:12px" ${s.calendar_count ? "open" : ""}><summary><b>${esc(t("set_calendar"))}</b> <span class="muted small">${esc(t("optional"))}</span></summary>
@@ -493,6 +518,7 @@ async function stepExtras(body) {
   };
   $("#exAuto").onchange = (e) => save({ auto_sync: e.target.checked });
   $("#exSem").onchange = (e) => save({ semantic_search: e.target.checked });
+  $("#exStatus")?.addEventListener("change", (e) => save({ ai_client_status: e.target.checked }));
   $("#exStart").onchange = async (e) => {
     try { await api("/api/autostart", { method: "POST", body: { enabled: e.target.checked } }); toast(t(e.target.checked ? "autostart_on" : "autostart_off")); }
     catch (err) { e.target.checked = !e.target.checked; toast(errText(err), { type: "error" }); }

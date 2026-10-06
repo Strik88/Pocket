@@ -79,6 +79,7 @@
 /* -- Base ----------------------------------------------------------------------- */
 
 *, *::before, *::after { box-sizing: border-box; }
+fieldset { min-width: 0; }
 html { font-size: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
@@ -453,14 +454,15 @@ dialog.wide { max-width: min(860px, calc(100vw - 32px)); }
 .onb-foot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border); }
 .onb-foot .spacer { flex: 1; }
 .steps-howto { counter-reset: s; list-style: none; padding: 0; margin: 16px 0; display: grid; gap: 10px; }
-.steps-howto li { counter-increment: s; display: flex; gap: 12px; align-items: flex-start; }
-.steps-howto li::before { content: counter(s); width: 26px; height: 26px; border-radius: 50%; background: var(--tint-neutral); color: var(--text); font-weight: 700; font-size: .875rem; display: inline-flex; align-items: center; justify-content: center; flex: none; margin-top: 1px; }
+.steps-howto li { counter-increment: s; position: relative; padding-left: 38px; min-height: 28px; }
+.steps-howto li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 26px; height: 26px; border-radius: 50%; background: var(--tint-neutral); color: var(--text); font-weight: 700; font-size: .875rem; display: inline-flex; align-items: center; justify-content: center; }
 .success-row { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-radius: var(--r); background: var(--tint-ai); margin: 12px 0; flex-wrap: wrap; }
 .success-row .icon { color: var(--success); }
 .choice { display: grid; gap: 12px; margin: 20px 0; }
 .choice-card { border: 1.5px solid var(--border-strong); border-radius: var(--r-lg); padding: 18px 20px; background: var(--surface); cursor: pointer; display: grid; grid-template-columns: 24px 1fr; gap: 4px 14px; transition: border-color .15s, box-shadow .15s; }
 .choice-card:hover { border-color: var(--text-2); }
-.choice-card:has(input:checked) { border-color: var(--navy); box-shadow: 0 0 0 1px var(--navy); }
+.choice-card:has(input[name=cm]:checked) { border-color: var(--btn-primary); box-shadow: 0 0 0 1px var(--btn-primary); }
+.choice-card label.t { cursor: pointer; }
 .choice-card input { margin-top: 4px; }
 .choice-card .t { font-weight: 700; font-size: 1.0625rem; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .choice-card .d { color: var(--text-2); font-size: .9375rem; margin: 0; }

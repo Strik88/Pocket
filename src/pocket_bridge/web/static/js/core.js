@@ -19,7 +19,7 @@ export function setLang(lang) {
   document.documentElement.lang = LANG;
 }
 
-/** t("key", {n: 3}) with {placeholders}; falls back to Dutch, then the key. */
+/** t(key, {n: 3}) with {placeholders}; falls back to Dutch, then the key. */
 export function t(key, vars = {}) {
   let s = STR[LANG]?.[key] ?? STR.nl[key] ?? key;
   for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, v);
@@ -91,7 +91,7 @@ export async function api(path, { method = "GET", body, signal } = {}) {
     res = await fetch(path, {
       method,
       signal,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+      headers: body !== undefined ? { "Content-Type": "application/json", "X-Pocket-Bridge": "1" } : { "X-Pocket-Bridge": "1" },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (e) {
@@ -100,6 +100,7 @@ export async function api(path, { method = "GET", body, signal } = {}) {
   }
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
+  if (res.status === 401) { location.reload(); throw new ApiError("auth"); }
   if (!res.ok) {
     const d = data?.detail;
     if (d && typeof d === "object" && !Array.isArray(d)) throw new ApiError(d.code || "error", d.message, res.status);

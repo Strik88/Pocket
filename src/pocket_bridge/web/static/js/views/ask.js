@@ -89,7 +89,7 @@ async function ask(root, question) {
   const body = $(".body", bubble);
   try {
     const res = await fetch("/api/ask", {
-      method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
+      method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "X-Pocket-Bridge": "1" },
       body: JSON.stringify({ question, client, history: history_ }),
     });
     if (!res.ok) {

@@ -92,8 +92,7 @@ def stop() -> Settings:
     else:
         s = Settings(language=s.language)
     s.demo_mode = False
-    if keep_key and not s.anthropic_api_key:
-        s.anthropic_api_key = keep_key
+    s.anthropic_api_key = keep_key  # the key as it is now: added in the demo, or deliberately removed there
     save_settings(s)
     _wipe_demo_dir()
     return s

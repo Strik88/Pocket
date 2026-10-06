@@ -16,8 +16,8 @@ PID=$!
 sleep 4
 if kill -0 "$PID" 2>/dev/null || [ -f "$HOME/.pocket-bridge/instance.json" ]; then
   echo ""
-  echo "Pocket Bridge draait. Je vindt het oranje rondje in de menubalk."
-  echo "Pocket Bridge is running. Look for the orange dot in the menu bar."
+  echo "Pocket Bridge draait. Je vindt het strikje van Striks in de menubalk."
+  echo "Pocket Bridge is running. Look for the Striks bowtie in the menu bar."
   echo "Je kunt dit venster sluiten. / You can close this window."
 else
   echo "Starten mislukt. Zie ~/.pocket-bridge/pocket-bridge.log / Start failed, see the log."

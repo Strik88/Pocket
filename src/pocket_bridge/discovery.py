@@ -85,10 +85,17 @@ def clean_name(settings: Settings, name: str, strip_legal: bool = True) -> str |
     name = name.lstrip("_. ").strip()[:60].strip()
     if not name or len(normalize_name(name)) < 2 or safe_name(name) == "untitled":
         return None
+    if re.fullmatch(r"\d{4}|onbekend|unknown", name.lower()):  # would clash with the year folders
+        return None
     reserved = {settings.clients_dirname.lower(), settings.unsorted_dirname.lower().lstrip("_"), "ongesorteerd", "unsorted", "klanten", "clients"}
     if name.lower() in reserved:
         return None
     return name
+
+
+def valid_domain(domain: str) -> bool:
+    d = str(domain or "").lower().lstrip("@").strip()
+    return bool(_DOMAIN_OK.match(d)) and d not in FREEMAIL and len(d) <= 80
 
 
 def _domain_of(text: str) -> str:
@@ -687,6 +694,12 @@ def run(settings: Settings, index: Index, progress: Callable[[int, int], None] |
     return proposal
 
 
+def _n_conv(settings: Settings, n: int) -> str:
+    if settings.language == "en":
+        return f"{n} conversation" + ("" if n == 1 else "s")
+    return f"{n} gesprek" + ("" if n == 1 else "ken")
+
+
 def heuristic(settings: Settings, index: Index) -> dict:
     """Proposal without Claude: Pocket tags, attendee e-mail domains and names that recur across recordings."""
     digests, info = build_digests(settings, index, "unsorted", 1000, "mcp")
@@ -694,28 +707,35 @@ def heuristic(settings: Settings, index: Index) -> dict:
     by_domain: dict[str, list[str]] = defaultdict(list)
     by_tag: dict[str, list[str]] = defaultdict(list)
     by_mention: dict[str, list[str]] = defaultdict(list)
+    strong_mentions: set[str] = set()
     for d in digests:
         for dom in set(d["domains"]) - own - FREEMAIL:
             by_domain[dom].append(d["pocket_id"])
         parsed = parse_markdown(Path(index.get(d["pocket_id"]).path))
         for t in (parsed.meta.get("tags") or []) if parsed else []:
             by_tag[str(t)].append(d["pocket_id"])
-        for m in d["mentions"][:3]:
+        summary = (parsed.summary if parsed else "").lower()
+        for i, m in enumerate(d["mentions"][:3]):
             by_mention[m].append(d["pocket_id"])
+            if i == 0 and m.lower() in summary:  # the main name, also in the summary: counts as strong evidence
+                strong_mentions.add(m)
     clients = []
     for dom, pids in by_domain.items():
         label = dom.split(".")[0].replace("-", " ").title()
         clients.append({"name": label, "confidence": "medium" if len(pids) > 1 else "low", "relationship": "client",
                         "email_domains": [dom], "keywords": [label], "recording_ids": pids,
-                        "reason": f"Deelnemers met e-maildomein {dom} in {len(pids)} gesprek(ken)."})
+                        "reason": (f"Attendees from {dom} in {_n_conv(settings, len(pids))}." if settings.language == "en"
+                                   else f"Deelnemers met e-maildomein {dom} in {_n_conv(settings, len(pids))}.")})
     for tag, pids in by_tag.items():
         if 2 <= len(pids) < max(3, len(digests) * 0.7) and tag.lower() not in GENERIC_WORDS:
             clients.append({"name": tag, "confidence": "low", "relationship": "client", "pocket_tags": [tag],
-                            "recording_ids": pids, "reason": f"Pocket-tag #{tag} op {len(pids)} gesprekken."})
+                            "recording_ids": pids, "reason": (f"Pocket tag #{tag} on {_n_conv(settings, len(pids))}." if settings.language == "en"
+                                                       else f"Pocket-tag #{tag} op {_n_conv(settings, len(pids))}.")})
     for m, pids in by_mention.items():
-        if len(pids) >= 2:
+        if len(pids) >= 2 or m in strong_mentions:
             clients.append({"name": m, "confidence": "low", "relationship": "client", "keywords": [m],
-                            "recording_ids": pids, "reason": f"De naam {m} komt terug in {len(pids)} gesprekken."})
+                            "recording_ids": pids, "reason": (f"The name {m} comes up in {_n_conv(settings, len(pids))}." if settings.language == "en"
+                                                       else f"De naam {m} komt terug in {_n_conv(settings, len(pids))}.")})
     id_map = {d["pocket_id"]: d["pocket_id"] for d in digests}
     proposal = validate(settings, index, {"clients": clients, "other": []}, id_map, "rules", info, digests)
     save_proposal(settings, proposal)
