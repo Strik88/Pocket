@@ -6,6 +6,7 @@
     pocket-bridge sync       sync once from the terminal   (--full to re-check everything)
     pocket-bridge connect    register with Claude Desktop
     pocket-bridge rebuild    re-scan files and regenerate dossiers
+    pocket-bridge shape X    how Pocket sent recording X (title or id), without its content: for bug reports
 """
 
 from __future__ import annotations
@@ -113,6 +114,45 @@ def cmd_rebuild(args: argparse.Namespace) -> None:
     print(rebuild(load_settings()))
 
 
+def _shape(value, depth: int = 0):
+    """The structure of Pocket's JSON with every text replaced by its length, so it can be shared safely."""
+    if isinstance(value, dict):
+        return {k: _shape(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_shape(v, depth + 1) for v in value[:2]] + ([f"... {len(value)} items"] if len(value) > 2 else [])
+    if isinstance(value, str):
+        return f"<text, {len(value)} chars>"
+    return value
+
+
+def cmd_shape(args: argparse.Namespace) -> None:
+    import json
+
+    from .config import load_settings
+    from .index import Index
+    from .pocket_api import parse_recording
+    from .storage import meta_dir
+    from .sync import _SAFE_ID
+
+    settings = load_settings()
+    index = Index(settings)
+    try:
+        index.refresh()
+        row = index.find(args.ref) if args.ref else next(iter(index.list(limit=1)), None)
+    finally:
+        index.close()
+    if not row or not _SAFE_ID.fullmatch(row.pocket_id):
+        raise SystemExit("Gesprek niet gevonden / recording not found")
+    raw = meta_dir(settings) / "raw" / f"{row.pocket_id}.json"
+    if not raw.exists():
+        raise SystemExit("Geen opgeslagen Pocket-data; zet 'Technische gegevens bewaren' aan en haal opnieuw op. / Turn on 'Keep raw data from Pocket' and fetch again.")
+    data = json.loads(raw.read_text(encoding="utf-8"))
+    rec = parse_recording(data)
+    print(json.dumps(_shape(data), indent=1, ensure_ascii=False))
+    speakers = sorted({s.speaker for s in rec.segments if s.speaker})
+    print(f"\nsegments: {len(rec.segments)}, speakers: {len(speakers)}, action items: {len(rec.action_items)}")
+
+
 def _ensure_streams() -> None:
     """pythonw.exe (Windows, no console) has no stdout/stderr; uvicorn and print() need them."""
     if sys.stdout is None or sys.stderr is None:
@@ -141,6 +181,8 @@ def main(argv: list[str] | None = None) -> None:
     sync.add_argument("--full", action="store_true")
     sub.add_parser("connect", help="register with Claude Desktop")
     sub.add_parser("rebuild", help="re-index files and rebuild dossiers")
+    shape = sub.add_parser("shape", help="show how Pocket sent a recording, without its content")
+    shape.add_argument("ref", nargs="?", default="", help="title or Pocket id (default: the latest)")
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or (argv[0] not in sub.choices and argv[0] not in ("-h", "--help")):
         argv.insert(0, "web")  # default command
@@ -148,7 +190,7 @@ def main(argv: list[str] | None = None) -> None:
 
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(levelname)s %(message)s")
     quiet_libraries()
-    {"web": cmd_web, "tray": cmd_tray, "mcp": cmd_mcp, "sync": cmd_sync, "connect": cmd_connect, "rebuild": cmd_rebuild}[args.cmd](args)
+    {"web": cmd_web, "tray": cmd_tray, "mcp": cmd_mcp, "sync": cmd_sync, "connect": cmd_connect, "rebuild": cmd_rebuild, "shape": cmd_shape}[args.cmd](args)
 
 
 if __name__ == "__main__":

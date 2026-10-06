@@ -130,7 +130,7 @@ def render_markdown(
     """meeting: Event.as_dict(); speakers: {"Speaker 1": "Jan"}; done_actions: texts already ticked off."""
     lang = settings.language
     speakers = speakers or {}
-    done_actions = done_actions or set()
+    done_actions = (done_actions or set()) | rec.actions_completed
     fm = {
         "pocket_id": rec.id,
         "title": one_line(rec.title),

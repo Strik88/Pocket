@@ -239,6 +239,8 @@ export async function copyText(text) {
 
 export function md(src, { headingStart = 3 } = {}) {
   const lines = esc(src).split("\n");
+  // Pocket's summaries start at ## or ####; the shallowest heading in the text maps to headingStart
+  const top = Math.min(6, ...lines.map((l) => (l.match(/^(#{1,6}) /) || [])[1]?.length || 6));
   let html = "", list = null, inFm = false, table = [];
   const inline = (s) =>
     s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
@@ -277,7 +279,7 @@ export function md(src, { headingStart = 3 } = {}) {
     closeList();
     const h = line.match(/^(#{1,6}) (.*)$/);
     if (h) {
-      const n = Math.min(6, h[1].length + headingStart - 1);
+      const n = Math.min(6, h[1].length - top + headingStart);
       html += `<h${n}>${inline(h[2])}</h${n}>`;
     } else if (/^&gt; ?/.test(line)) html += `<blockquote>${inline(line.replace(/^&gt; ?/, ""))}</blockquote>`;
     else if (line.trim()) html += `<p>${inline(line)}</p>`;

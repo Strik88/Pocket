@@ -231,7 +231,7 @@ async function tabAbout(box, ctx) {
     <section class="card">
       <img class="about-logo" src="/static/img/striks-logo-color.png" alt="Striks AI Consulting" width="140">
       <h2 style="margin-top:16px">Pocket Bridge <span class="muted" style="font-weight:500">v${esc(st.version)}</span></h2>
-      <p>${esc(t("about_text"))} <a href="https://striksaiconsulting.com" target="_blank" rel="noopener">striksaiconsulting.com</a></p>
+      <p>${esc(t("about_text"))} <a href="https://striks.ai" target="_blank" rel="noopener">striks.ai</a></p>
       <p class="help">${esc(t("about_license"))}</p>
     </section>
     <section class="card section">

@@ -76,8 +76,16 @@ def _store_result(res: syncmod.SyncResult) -> None:
 _auto = syncmod.AutoSync(on_result=_store_result)
 
 
+def _upgrade_files() -> None:
+    try:
+        syncmod.upgrade()
+    except Exception:  # never block the app on it; the next sync tries again
+        log.exception("upgrading recording files failed")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    threading.Thread(target=_upgrade_files, name="pocket-upgrade", daemon=True).start()
     _auto.start()
     yield
     _auto.stop()

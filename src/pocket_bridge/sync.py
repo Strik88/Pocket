@@ -22,7 +22,7 @@ from .config import Client, Project, Settings, load_settings, save_settings
 from .dossier import build_dossier, rebuild_all
 from .i18n import t
 from .index import Index
-from .pocket_api import PocketClient, Recording
+from .pocket_api import PocketClient, parse_recording
 from .storage import (
     client_dir,
     meta_dir,
@@ -30,6 +30,7 @@ from .storage import (
     rename_speakers_in_file,
     render_markdown,
     set_location,
+    speakers_in,
     target_path,
     unique_path,
 )
@@ -37,6 +38,8 @@ from .storage import (
 log = logging.getLogger(__name__)
 _SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _thread_lock = threading.Lock()
+# Raise this when reading Pocket's data improves: existing files are then rewritten from the stored JSON.
+FORMAT_VERSION = 2
 
 
 @dataclass
@@ -127,12 +130,8 @@ def run_sync(
 
         transport = demo.transport()
 
-    if not _thread_lock.acquire(blocking=False):
-        result.message = t(settings.language, "sync_busy")
-        return result
-    lock = FileLock(meta_dir(settings) / "sync.lock")
-    if not lock.acquire():
-        _thread_lock.release()
+    lock = _acquire(settings)
+    if not lock:
         result.message = t(settings.language, "sync_busy")
         return result
     try:
@@ -144,13 +143,25 @@ def run_sync(
     return result
 
 
+def _acquire(settings: Settings) -> FileLock | None:
+    """Both locks, or None when a sync is already running in this or another process."""
+    if not _thread_lock.acquire(blocking=False):
+        return None
+    lock = FileLock(meta_dir(settings) / "sync.lock")
+    if not lock.acquire():
+        _thread_lock.release()
+        return None
+    return lock
+
+
 def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport, allow_ai: bool = True) -> None:
     state = load_state(settings)
     known: dict = state.setdefault("recordings", {})
     speakers: dict = state.setdefault("speakers", {})
     index = Index(settings)
     index.refresh()  # pick up files the user moved by hand
-    touched_clients: set[str] = set()
+    touched_clients: set[str] = _upgrade_files(settings, state, index)
+    full = full or bool(state.get("refetch"))
 
     start_date = settings.sync_since
     if not full and state.get("last_sync"):
@@ -197,11 +208,10 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
                 if existing:
                     path = Path(existing.path)
                     client, project = existing.client, existing.project
-                    source = _current_source(path) or "kept"
-                    old = parse_markdown(path)
-                    done_actions = {text for done, text in (old.action_items if old else []) if done}
-                    if old and not meeting and old.meta.get("meeting"):
-                        meeting = {"title": old.meta.get("meeting"), "attendees": old.meta.get("attendees") or []}
+                    if rid not in known and state.get("refetch"):  # fetched again for an upgrade
+                        _backup(settings, rid, path)
+                    source, done_actions, old_meeting = _kept_from_file(path)
+                    meeting = meeting or old_meeting
                     result.updated += 1
                 else:
                     decision = classifier.classify(settings, rec, meeting, allow_ai=allow_ai)
@@ -230,6 +240,8 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
         result.message = str(exc)
 
     state["last_sync"] = result.started if not result.message else state.get("last_sync", "")
+    if not result.message and not result.errors:
+        state.pop("refetch", None)
     state["last_result"] = result.as_dict()
     save_state(settings, state)
     after_change(settings, index, touched_clients, say)
@@ -268,6 +280,102 @@ def after_change(settings: Settings, index: Index, clients: set[str], say=lambda
                 say(t(settings.language, "semantic_indexed", n=n))
         except Exception as exc:
             log.warning("semantic index update failed: %s", exc)
+
+
+def _kept_from_file(path: Path) -> tuple[str, set[str], dict | None]:
+    """What a rewrite keeps from the current file: why it is filed here, ticked action items, the meeting."""
+    source = _current_source(path) or "kept"
+    old = parse_markdown(path)
+    done = {text for done, text in (old.action_items if old else []) if done}
+    meeting = None
+    if old and old.meta.get("meeting"):
+        meeting = {"title": old.meta.get("meeting"), "attendees": old.meta.get("attendees") or []}
+    return source, done, meeting
+
+
+def _backup(settings: Settings, rid: str, path: Path) -> None:
+    """Keep the current version of a file before an upgrade rewrites it (notes typed into it survive here)."""
+    folder = meta_dir(settings) / "backup"
+    folder.mkdir(exist_ok=True)
+    shutil.copy2(path, folder / f"{rid}.md")
+
+
+def _upgrade_files(settings: Settings, state: dict, index: Index) -> set[str]:
+    """Rewrite existing files from the stored Pocket JSON after the reading of Pocket's data improved
+    (action items, speakers). Works offline; recordings without stored JSON are fetched again on the
+    next sync. Only files that gain something are rewritten, and the previous version is kept in
+    .pocket-bridge/backup. Returns the clients whose files changed."""
+    if state.get("format", 1) >= FORMAT_VERSION:
+        return set()
+    known: dict = state.setdefault("recordings", {})
+    speakers: dict = state.setdefault("speakers", {})
+    raw_dir = meta_dir(settings) / "raw"
+    touched: set[str] = set()
+    for row in index.list(limit=10_000_000):
+        if not _SAFE_ID.fullmatch(row.pocket_id or ""):
+            continue
+        try:
+            rec = parse_recording(json.loads((raw_dir / f"{row.pocket_id}.json").read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            if known.pop(row.pocket_id, None) is not None:
+                state["refetch"] = True  # no stored JSON: fetch it from Pocket again
+            continue
+        path = Path(row.path)
+        if rec.id != row.pocket_id or not rec.has_transcript or not path.exists():
+            continue
+        try:
+            current = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        old = parse_markdown(path)
+        gains_actions = bool(rec.action_items) and not (old and old.action_items)
+        gains_speakers = len({s.speaker for s in rec.segments if s.speaker}) > len(speakers_in(current))
+        if not (gains_actions or gains_speakers):
+            continue
+        source, done, meeting = _kept_from_file(path)
+        try:
+            _backup(settings, row.pocket_id, path)
+            path.write_text(
+                render_markdown(settings, rec, row.client, source, row.project, meeting, speakers.get(row.pocket_id), done),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            log.warning("could not rewrite a recording file: %s", exc)
+            continue
+        index.upsert_file(path)
+        if row.client:
+            touched.add(row.client)
+    state["format"] = FORMAT_VERSION
+    save_state(settings, state)
+    return touched
+
+
+def upgrade(settings: Settings | None = None) -> int:
+    """Run the file upgrade on its own (at start-up), so users see action items and speakers without
+    waiting for a sync. Skips quietly when a sync is running; that sync does the upgrade itself."""
+    settings = settings or load_settings()
+    if not settings.root.exists():
+        return 0
+    state = load_state(settings)
+    if state.get("format", 1) >= FORMAT_VERSION:
+        return 0
+    lock = _acquire(settings)
+    if not lock:
+        return 0
+    try:
+        state = load_state(settings)
+        index = Index(settings)
+        try:
+            index.refresh()
+            clients = _upgrade_files(settings, state, index)
+            for client in clients:
+                build_dossier(settings, client, index.list(client=client, limit=100_000))
+            return len(clients)
+        finally:
+            index.close()
+    finally:
+        lock.release()
+        _thread_lock.release()
 
 
 def _current_source(path: Path) -> str:

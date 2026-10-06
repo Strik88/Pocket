@@ -249,12 +249,15 @@ Bij elk gesprek zie je welke regel het besliste. Gesprekken die je zelf verplaat
 | Agenda-test vindt 0 afspraken | Gebruik de *geheime* iCal-link (niet de openbare). Bij Outlook moet de agenda gepubliceerd zijn met details. |
 | Een gesprek ontbreekt | Pocket is mogelijk nog aan het verwerken. Wacht even, of kies *Instellingen → Automatisch → Alles opnieuw ophalen uit Pocket*. |
 | Bestanden handmatig verplaatst of hernoemd | *Instellingen → Over → Technische details → Alles opnieuw inlezen*. |
+| Geen actiepunten of sprekers bij een gesprek | Pocket stuurt die alleen mee als Pocket ze zelf heeft herkend. Klopt het niet, draai dan `uv run pocket-bridge shape "titel van het gesprek"` in de map van Pocket Bridge en stuur de uitvoer mee met je melding. De uitvoer toont alleen hoe de gegevens zijn opgebouwd. |
 
 **Let op:** als Pocket een gesprek bijwerkt, wordt het bestand opnieuw geschreven. Afgevinkte actiepunten, sprekernamen, klant en project blijven bewaard, eigen aantekeningen in het gespreksbestand niet. Zet die in `_Dossier.md` onder **Notities**.
 
 ### Bijwerken naar een nieuwe versie
 
 Sluit Pocket Bridge af (strikje → *Afsluiten*), download de nieuwe ZIP, pak hem uit over de oude map heen en start het startscript opnieuw. Je instellingen en gesprekken blijven bewaard, want die staan op een andere plek. Gebruikers van een eerdere versie hoeven de installatie niet opnieuw te doorlopen.
+
+Leest een nieuwe versie meer uit Pocket dan de vorige (zoals versie 1.0.1 met actiepunten en sprekers), dan vult Pocket Bridge je bestaande gesprekken bij het opstarten zelf aan. Dat gebeurt alleen bij gesprekken die er iets bij krijgen; de vorige versie van zo'n bestand staat in `.pocket-bridge/backup` in je gespreksmap.
 
 ---
 
@@ -267,6 +270,7 @@ uv run pocket-bridge            # webapp
 uv run pocket-bridge tray       # webapp + icoon
 uv run pocket-bridge mcp        # MCP-server (stdio)
 uv run pocket-bridge sync       # één keer ophalen
+uv run pocket-bridge shape X    # hoe Pocket gesprek X aanlevert, zonder de inhoud
 ```
 
 | Bestand | Wat |
@@ -287,4 +291,4 @@ Ideeën voor uitbreidingen staan in [docs/ideeen.md](docs/ideeen.md).
 
 ---
 
-Gemaakt door Ian Strik · [Striks AI Consulting](https://striksaiconsulting.com). Pocket Bridge is een onafhankelijk project en niet verbonden aan Pocket of Anthropic. Licentie: MIT. Lettertype Montserrat (SIL Open Font License), iconen [Lucide](https://lucide.dev) (ISC).
+Gemaakt door Ian Strik · [Striks AI Consulting](https://striks.ai). Pocket Bridge is een onafhankelijk project en niet verbonden aan Pocket of Anthropic. Licentie: MIT. Lettertype Montserrat (SIL Open Font License), iconen [Lucide](https://lucide.dev) (ISC).
