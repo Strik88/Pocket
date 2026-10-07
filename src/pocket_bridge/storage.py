@@ -27,6 +27,10 @@ from .config import Settings
 from .i18n import t
 from .pocket_api import Recording
 
+# How Pocket's data is read into a file. Raise it when that improves: existing files are then upgraded
+# once (sync._upgrade_files), and a file carries the version it was written in ("bridge_format").
+FORMAT_VERSION = 2
+
 _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 _YEAR = re.compile(r"^(\d{4}|onbekend|unknown)$")
@@ -117,6 +121,46 @@ def _fmt_ts(seconds: float | None) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
+def _action_key(text: str) -> str:
+    """Compare action items loosely: whitespace, case and the time part of a due date may differ."""
+    return re.sub(r"(\d{4}-\d{2}-\d{2})T[^,)\s]*", r"\1", " ".join(str(text).split())).casefold()
+
+
+def _split_note(key: str) -> tuple[str, set[str]]:
+    """'bel petra (ian, 2026-10-01)' -> ('bel petra', {'ian', '2026-10-01'})"""
+    m = re.match(r"^(.*?)\s*\(([^()]*)\)$", key)
+    if not m:
+        return key, set()
+    return m.group(1), {f.strip() for f in m.group(2).split(",") if f.strip()}
+
+
+def still_ticked(items: list[str], old: list[tuple[bool, str]]) -> set[str]:
+    """Which new action item texts were ticked off in the old file, also when Pocket's wording shifted
+    slightly: "Bel  Petra" -> "Bel Petra", a due date without the time, an owner or date added in
+    parentheses. An item that matches one left open stays open."""
+    if not any(done for done, _ in old):
+        return set()
+    done_exact = {text for done, text in old if done}
+    done_keys = {_action_key(text) for done, text in old if done}
+    open_keys = {_action_key(text) for done, text in old if not done}
+    old_split = [(done, *_split_note(_action_key(text))) for done, text in old]
+    new_split = [_split_note(_action_key(a)) for a in items]
+    out = set()
+    for a, (title, fields) in zip(items, new_split):
+        key = _action_key(a)
+        if a in done_exact or (key in done_keys and key not in open_keys):
+            out.add(a)
+            continue
+        same_old = [o for o in old_split if o[1] == title]
+        same_new = [n for n in new_split if n[0] == title]
+        if key in open_keys or len(same_old) != 1 or len(same_new) != 1:
+            continue
+        done, _, old_fields = same_old[0]
+        if done and old_fields <= fields:  # only details were added, e.g. an owner or a date
+            out.add(a)
+    return out
+
+
 def render_markdown(
     settings: Settings,
     rec: Recording,
@@ -125,12 +169,14 @@ def render_markdown(
     project: str | None = None,
     meeting: dict | None = None,
     speakers: dict[str, str] | None = None,
-    done_actions: set[str] | None = None,
+    done_actions: set[str] | list[tuple[bool, str]] | None = None,
 ) -> str:
-    """meeting: Event.as_dict(); speakers: {"Speaker 1": "Jan"}; done_actions: texts already ticked off."""
+    """meeting: Event.as_dict(); speakers: {"Speaker 1": "Jan"}; done_actions: the old file's action items as
+    (done, text) pairs, or just the texts already ticked off."""
     lang = settings.language
     speakers = speakers or {}
-    done_actions = done_actions or set()
+    old = [(True, a) for a in done_actions] if isinstance(done_actions, (set, frozenset)) else list(done_actions or [])
+    done_actions = still_ticked(rec.action_items, old) | rec.actions_completed
     fm = {
         "pocket_id": rec.id,
         "title": one_line(rec.title),
@@ -146,6 +192,7 @@ def render_markdown(
         "language": rec.language,
         "pocket_updated_at": rec.updated_at,
         "source": "pocket",
+        "bridge_format": FORMAT_VERSION,
     }
     lines = ["---"]
     for k, v in fm.items():
@@ -321,15 +368,12 @@ def speakers_in(text: str) -> list[str]:
     return list(dict.fromkeys(m.group("name").strip() for m in SPEAKER_LINE.finditer(body)))
 
 
-def rename_speakers_in_file(path: Path, mapping: dict[str, str]) -> int:
-    """Rename speaker headings in the transcript section. Returns number of headings changed."""
+def rename_speakers_in_text(text: str, mapping: dict[str, str]) -> tuple[str, int]:
+    """Rename speaker headings in the transcript section, in one pass (so A->B, B->C never chains)."""
     mapping = {k: v.strip() for k, v in mapping.items() if v and v.strip() and v.strip() != k}
-    if not mapping:
-        return 0
-    text = path.read_text(encoding="utf-8")
     idx = text.lower().find("## transcript")
-    if idx < 0:
-        return 0
+    if not mapping or idx < 0:
+        return text, 0
     head, tail = text[:idx], text[idx:]
     count = 0
 
@@ -341,9 +385,39 @@ def rename_speakers_in_file(path: Path, mapping: dict[str, str]) -> int:
             return f"**{mapping[name]}**{m.group('rest')}"
         return m.group(0)
 
-    tail = SPEAKER_LINE.sub(repl, tail)
-    path.write_text(head + tail, encoding="utf-8")
+    return head + SPEAKER_LINE.sub(repl, tail), count
+
+
+def rename_speakers_in_file(path: Path, mapping: dict[str, str]) -> int:
+    """Rename speaker headings in the transcript section. Returns number of headings changed."""
+    text, count = rename_speakers_in_text(path.read_text(encoding="utf-8"), mapping)
+    if count:
+        write_file(path, text)
     return count
+
+
+def stamp_format(text: str) -> str:
+    """Record in the front matter that the file is in today's format."""
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return text
+    lines = [ln for ln in text[:end].split("\n") if not ln.startswith("bridge_format:")]
+    return "\n".join(lines) + f"\nbridge_format: {FORMAT_VERSION}" + text[end:]
+
+
+def file_format(meta: dict) -> int:
+    try:
+        return int(meta.get("bridge_format") or 1)
+    except (TypeError, ValueError, OverflowError):
+        return 1
+
+
+def write_file(path: Path, text: str) -> None:
+    """Write into the file itself (through a link, if it is one), so its permissions, Finder tags, creation
+    date and links stay as the user set them. A read-only file raises PermissionError, which callers skip."""
+    path.resolve().write_text(text, encoding="utf-8")
 
 
 # -- Action items -----------------------------------------------------------------

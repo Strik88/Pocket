@@ -90,12 +90,15 @@ Pocket tag → calendar meeting (attendee e-mail domain, or client name in the m
 
 When Pocket updates a conversation the file is rewritten: ticked action items, speaker names, client and project are kept, notes typed into the conversation file are not. Keep notes in `_Dossier.md` under **Notes**.
 
+When a new version reads more from Pocket than the previous one (such as 1.0.1 with action items and speakers), Pocket Bridge fills in your existing conversations at start-up. Only conversations that gain something are rewritten; the previous version of such a file is kept in `.pocket-bridge/backup` in your conversations folder. No action items or speakers where you expect them? Run `uv run pocket-bridge shape "conversation title"` in the Pocket Bridge folder and include the output in your report: it only shows how Pocket structured the data.
+
 ## Development
 
 ```bash
 uv sync --extra dev && uv run pytest
 uv run pocket-bridge tray      # web app + tray icon
 uv run pocket-bridge mcp       # MCP server (stdio)
+uv run pocket-bridge shape X   # how Pocket sent conversation X, without its content
 ```
 
-Made by Ian Strik · [Striks AI Consulting](https://striksaiconsulting.com). Not affiliated with Pocket or Anthropic. MIT licence. Montserrat font (SIL Open Font License), [Lucide](https://lucide.dev) icons (ISC).
+Made by Ian Strik · [Striks AI Consulting](https://striks.ai). Not affiliated with Pocket or Anthropic. MIT licence. Montserrat font (SIL Open Font License), [Lucide](https://lucide.dev) icons (ISC).

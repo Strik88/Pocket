@@ -112,7 +112,7 @@ async function renderDetail(box, id, clients) {
       </header>
       <div class="toolbar">
         <button class="btn ai small" id="fuBtn" ${canAi ? "" : 'aria-disabled="true"'}>${icon("mail", "sm")} ${esc(t("followup_btn"))}</button>
-        <button class="btn small" id="spBtn">${icon("users", "sm")} ${esc(t("speakers_btn"))}</button>
+        ${r.speakers.length ? `<button class="btn small" id="spBtn">${icon("users", "sm")} ${esc(t("speakers_btn"))}</button>` : ""}
         <button class="btn small ghost" id="revealBtn">${icon("folder-open", "sm")} ${esc(t("show_in_folder"))}</button>
       </div>
       ${canAi ? "" : `<p class="help">${esc(t("followup_needs"))}</p>`}
@@ -159,7 +159,7 @@ async function renderDetail(box, id, clients) {
     if (e.currentTarget.getAttribute("aria-disabled") === "true") { toast(t("followup_needs"), { type: "error" }); return; }
     followUp(e.currentTarget, $("#panel", box), id);
   };
-  $("#spBtn", box).onclick = () => speakers($("#panel", box), r);
+  $("#spBtn", box)?.addEventListener("click", () => speakers($("#panel", box), r));
 }
 
 
