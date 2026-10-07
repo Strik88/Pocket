@@ -18,6 +18,7 @@ so users can simply drag files between folders in Finder/Explorer.
 from __future__ import annotations
 
 import json
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -26,6 +27,10 @@ from pathlib import Path
 from .config import Settings
 from .i18n import t
 from .pocket_api import Recording
+
+# How Pocket's data is read into a file. Raise it when that improves: existing files are then upgraded
+# once (sync._upgrade_files), and a file carries the version it was written in ("bridge_format").
+FORMAT_VERSION = 2
 
 _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -188,6 +193,7 @@ def render_markdown(
         "language": rec.language,
         "pocket_updated_at": rec.updated_at,
         "source": "pocket",
+        "bridge_format": FORMAT_VERSION,
     }
     lines = ["---"]
     for k, v in fm.items():
@@ -363,15 +369,12 @@ def speakers_in(text: str) -> list[str]:
     return list(dict.fromkeys(m.group("name").strip() for m in SPEAKER_LINE.finditer(body)))
 
 
-def rename_speakers_in_file(path: Path, mapping: dict[str, str]) -> int:
-    """Rename speaker headings in the transcript section. Returns number of headings changed."""
+def rename_speakers_in_text(text: str, mapping: dict[str, str]) -> tuple[str, int]:
+    """Rename speaker headings in the transcript section, in one pass (so A->B, B->C never chains)."""
     mapping = {k: v.strip() for k, v in mapping.items() if v and v.strip() and v.strip() != k}
-    if not mapping:
-        return 0
-    text = path.read_text(encoding="utf-8")
     idx = text.lower().find("## transcript")
-    if idx < 0:
-        return 0
+    if not mapping or idx < 0:
+        return text, 0
     head, tail = text[:idx], text[idx:]
     count = 0
 
@@ -383,9 +386,43 @@ def rename_speakers_in_file(path: Path, mapping: dict[str, str]) -> int:
             return f"**{mapping[name]}**{m.group('rest')}"
         return m.group(0)
 
-    tail = SPEAKER_LINE.sub(repl, tail)
-    path.write_text(head + tail, encoding="utf-8")
+    return head + SPEAKER_LINE.sub(repl, tail), count
+
+
+def rename_speakers_in_file(path: Path, mapping: dict[str, str]) -> int:
+    """Rename speaker headings in the transcript section. Returns number of headings changed."""
+    text, count = rename_speakers_in_text(path.read_text(encoding="utf-8"), mapping)
+    if count:
+        write_text_atomic(path, text)
     return count
+
+
+def stamp_format(text: str) -> str:
+    """Record in the front matter that the file is in today's format."""
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return text
+    lines = [ln for ln in text[:end].split("\n") if not ln.startswith("bridge_format:")]
+    return "\n".join(lines) + f"\nbridge_format: {FORMAT_VERSION}" + text[end:]
+
+
+def file_format(meta: dict) -> int:
+    try:
+        return int(meta.get("bridge_format") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write via a temporary file next to it, so a crash never leaves half a file."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # -- Action items -----------------------------------------------------------------

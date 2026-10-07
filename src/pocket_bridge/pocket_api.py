@@ -335,14 +335,16 @@ def _clock(ts: str | None) -> float | None:
 _GENERIC_NAME = re.compile(r"^(?:unknown |onbekende )?(?:speaker|spk|spreker)[ _-]?\d+$", re.I)
 
 
-def _established(names: list[str], known: set[str]) -> set[str]:
+def _established(names: list[str], known: set[str]) -> set[str] | None:
     """Names that are really speakers: Pocket's own labels ("Speaker 1") or names Pocket listed for this
-    recording, plus names that come back next to those labels ("Ian: ..." between "Unknown Speaker 2: ...").
-    "Todo:", "Besluit:" or "Agenda maandag 09:00" in a memo stay text, also when they repeat."""
+    recording. None when the text is ambiguous: another label that comes back ("Todo:", "Actie:", or a name
+    Pocket did not list) could be a speaker or part of what was said, so the text stays as it is."""
     base = {n for n in names if _GENERIC_NAME.match(n) or n in known}
-    if base:  # a real transcript: a name next to Pocket's labels counts when it comes back
-        base |= {n for n in names if names.count(n) >= 2}
-    return base
+    counts: dict[str, int] = {}
+    for n in names:
+        if n not in base:
+            counts[n] = counts.get(n, 0) + 1
+    return None if any(c >= 2 for c in counts.values()) else base
 
 
 def _segments_from_text(text: str, known: set[str] = frozenset()) -> list[Segment]:
@@ -353,6 +355,8 @@ def _segments_from_text(text: str, known: set[str] = frozenset()) -> list[Segmen
         return []
     inline = [_INLINE_TURN.match(ln) for ln in lines]
     names = _established([m.group("name").strip() for m in inline if m], known)
+    if names is None:
+        return []
     turns = [bool(m and m.group("name").strip() in names) for m in inline]
     if len(names) >= 2 and sum(turns) >= 0.5 * len(lines):
         segs: list[Segment] = []
@@ -365,14 +369,15 @@ def _segments_from_text(text: str, known: set[str] = frozenset()) -> list[Segmen
                 segs.append(Segment(text=ln))
         return segs
     headers = [_HEADER_TURN.match(ln) for ln in lines]
-    names = _established([m.group("name").strip() for m in headers if m], known)
+    names = _established([m.group("name").strip() for m in headers if m], known) or set()
     heads = [i for i, m in enumerate(headers) if m and m.group("name").strip() in names]
+    head_set = set(heads)
     starts = [_clock(headers[i].group("ts")) or 0 for i in heads]
-    followed = all(i + 1 < len(lines) and i + 1 not in heads for i in heads)
+    followed = all(i + 1 < len(lines) and i + 1 not in head_set for i in heads)
     if len(names) >= 2 and len(heads) >= 0.25 * len(lines) and followed and starts == sorted(starts):
         segs = []
         for i, ln in enumerate(lines):
-            if i in heads:
+            if i in head_set:
                 segs.append(Segment(text="", speaker=headers[i].group("name").strip(), start=_clock(headers[i].group("ts"))))
             elif segs:
                 segs[-1].text = (segs[-1].text + "\n" + ln).strip()

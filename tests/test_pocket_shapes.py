@@ -7,7 +7,7 @@ from pathlib import Path
 from pocket_bridge import sync
 from pocket_bridge.index import Index
 from pocket_bridge.pocket_api import Segment, parse_recording
-from pocket_bridge.storage import parse_markdown, render_markdown, speakers_in
+from pocket_bridge.storage import FORMAT_VERSION, parse_markdown, render_markdown, speakers_in
 
 from .conftest import make_transport
 
@@ -181,7 +181,9 @@ def as_v100(settings, data, labels=None, names=None, keep_actions=False, note=""
     row = index.get(data["id"])
     index.close()
     path = Path(row.path)
-    path.write_text(render_markdown(settings, rec, row.client, "rule: x", row.project, None, names, set()) + note, encoding="utf-8")
+    text = render_markdown(settings, rec, row.client, "rule: x", row.project, None, names, set())
+    text = text.replace(f"bridge_format: {FORMAT_VERSION}\n", "")  # 1.0.0 did not stamp its files
+    path.write_text(text + note, encoding="utf-8")
     state = sync.load_state(settings)
     state["format"] = 1
     state["speakers"] = {data["id"]: dict(names)} if names else {}
@@ -292,6 +294,8 @@ def test_without_stored_json_only_gaining_files_are_fetched_and_rewritten(settin
     gone = {"id": "rec_failing", "title": "Weg bij Pocket", "recording_at": "2026-09-21T10:00:00Z",
             "updated_at": "2026-09-21T11:00:00Z", "transcript": "Ook kort."}
     sync.run_sync(settings, transport=make_transport({"rec_plain": plain, "rec_failing": gone}))
+    for f in settings.root.rglob("*.md"):  # as 1.0.0 wrote them
+        f.write_text(f.read_text(encoding="utf-8").replace(f"bridge_format: {FORMAT_VERSION}\n", ""), encoding="utf-8")
     path = as_v100(settings, CURRENT, note="\nNotitie bij interview.\n")
     plain_path = next(settings.root.rglob("*Losse notitie.md"))
     plain_path.write_text(plain_path.read_text(encoding="utf-8") + "\nMijn notitie.\n", encoding="utf-8")
@@ -434,17 +438,17 @@ def test_upgrade_that_stopped_halfway_can_run_again(settings, monkeypatch):
 
 def test_a_locked_file_does_not_stop_the_sync_or_move_names_twice(settings, monkeypatch):
     path = as_v100(settings, SPK0, labels=["Ian", "Speaker 1"], names={"Speaker 0": "Ian"}, keep_actions=True)
-    real_rename = sync.rename_speakers_in_file
+    real_write = sync.write_text_atomic
 
     def locked(*a, **k):
         raise PermissionError("in use by OneDrive")
 
-    monkeypatch.setattr(sync, "rename_speakers_in_file", locked)
+    monkeypatch.setattr(sync, "write_text_atomic", locked)
     res = sync.run_sync(settings, transport=make_transport({"rec_now": SPK0}))
     assert not res.message.startswith("in use")
     state = sync.load_state(settings)
     assert state["speakers"]["rec_now"] == {"Speaker 0": "Ian"} and state["refetch_ids"] == {"rec_now": 1}
-    monkeypatch.setattr(sync, "rename_speakers_in_file", real_rename)
+    monkeypatch.setattr(sync, "write_text_atomic", real_write)
     sync.run_sync(settings, transport=make_transport({"rec_now": SPK0}))
     assert turns(path) == [("Ian", "Ik ben persoon A."), ("Speaker 2", "Ik ben persoon B.")]
     sync.run_sync(settings, transport=make_transport({"rec_now": dict(SPK0, updated_at="2026-10-01T09:00:00Z")}), full=True)
@@ -453,8 +457,51 @@ def test_a_locked_file_does_not_stop_the_sync_or_move_names_twice(settings, monk
 
 
 def test_name_next_to_pocket_labels_in_plain_text():
-    rec = parse_recording({"id": "r", "title": "x", "transcription": {"transcription": {"text": (
-        "Ian Striks: Goedemorgen, zullen we beginnen?\nUnknown Speaker 2: Ja, prima.\nIan Striks: Eerst de planning.\n"
-        "Unknown Speaker 2: Die loopt uit.\nUnknown Speaker 3: Dat lijkt me haalbaar."
-    )}}})
+    text = ("Ian Striks: Goedemorgen, zullen we beginnen?\nUnknown Speaker 2: Ja, prima.\nIan Striks: Eerst de planning.\n"
+            "Unknown Speaker 2: Die loopt uit.\nUnknown Speaker 3: Dat lijkt me haalbaar.")
+    # Pocket did not list Ian Striks: a name that comes back could be a speaker or part of the text; keep the text
+    rec = parse_recording({"id": "r", "title": "x", "transcription": {"transcription": {"text": text}}})
+    assert rec.segments == [] and rec.transcript_text == text
+    rec = parse_recording({"id": "r", "title": "x", "speakers": [{"id": "1", "name": "Ian Striks"}],
+                           "transcription": {"transcription": {"text": text}}})
     assert [s.speaker for s in rec.segments] == ["Ian Striks", "Unknown Speaker 2", "Ian Striks", "Unknown Speaker 2", "Unknown Speaker 3"]
+
+
+def test_repeated_labels_inside_a_transcript_keep_it_plain():
+    for text in (
+        "Speaker 1: We lopen de acties door.\nActie: Ian stuurt de offerte.\nActie: Jan plant de demo.\nSpeaker 2: Akkoord.\nSpeaker 1: Dan beginnen we.",
+        "Speaker 1: Notities van vandaag.\nTodo: Jan bellen.\nTodo: offerte sturen.\nBesluit: we gaan door.",
+        "Notulen.\nSpreker 1: Jan de Vries, inkoop.\nActie: Jan stuurt de offerte.\nActie: Ian plant de kickoff.",
+    ):
+        rec = parse_recording({"id": "r", "title": "x", "transcript": text})
+        assert rec.segments == [] and rec.transcript_text == text
+
+
+def test_notes_in_a_file_do_not_block_the_relabel(settings):
+    # A bold line in notes the user added, and a heading typed by hand, are left alone
+    data = dict(CURRENT, transcript=[
+        {"speaker": "Speaker 0", "text": "Ik ben persoon A.", "start": 0},
+        {"speaker": "Speaker 1", "text": "Ik ben persoon B.", "start": 2},
+        {"speaker": "Speaker 2", "text": "Ik ben persoon C.", "start": 4},
+    ])
+    path = as_v100(settings, data, labels=["Ian", "Speaker 1", "Speaker 2"], keep_actions=True,
+                   note="\n## Notities\n\n**Vervolgafspraak**\nDinsdag bellen.\n")
+    sync.upgrade(settings)
+    assert turns(path)[:3] == [("Ian", "Ik ben persoon A."), ("Speaker 2", "Ik ben persoon B."), ("Speaker 3", "Ik ben persoon C.")]
+    assert "**Vervolgafspraak**" in path.read_text(encoding="utf-8")
+    sync.rename_speakers(settings, "rec_now", {"Speaker 2": "Jan"})
+    sync.run_sync(settings, transport=make_transport({"rec_now": dict(data, updated_at="2026-10-01T09:00:00Z")}), full=True)
+    assert turns(path)[1] == ("Jan", "Ik ben persoon B.")
+
+
+def test_a_deleted_file_that_comes_back_gets_its_names_moved(settings):
+    settings.keep_raw_json = False
+    path = as_v100(settings, SPK0, labels=["Ian", "Jan"], names={"Speaker 0": "Ian", "Speaker 1": "Jan"})
+    sync.upgrade(settings)
+    path.unlink()
+    sync.run_sync(settings, transport=make_transport({}))  # the refetch finds no file: the id waits
+    assert "rec_now" in sync.load_state(settings)["refetch_ids"]
+    sync.run_sync(settings, transport=make_transport({"rec_now": SPK0}), full=True)  # brings the file back
+    back = next(settings.root.rglob("*Reflective interview.md"))
+    assert turns(back) == [("Ian", "Ik ben persoon A."), ("Jan", "Ik ben persoon B.")]
+    assert "refetch_ids" not in sync.load_state(settings)
