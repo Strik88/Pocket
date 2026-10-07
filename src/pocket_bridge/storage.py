@@ -18,7 +18,6 @@ so users can simply drag files between folders in Finder/Explorer.
 from __future__ import annotations
 
 import json
-import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -393,7 +392,7 @@ def rename_speakers_in_file(path: Path, mapping: dict[str, str]) -> int:
     """Rename speaker headings in the transcript section. Returns number of headings changed."""
     text, count = rename_speakers_in_text(path.read_text(encoding="utf-8"), mapping)
     if count:
-        write_text_atomic(path, text)
+        write_file(path, text)
     return count
 
 
@@ -411,18 +410,14 @@ def stamp_format(text: str) -> str:
 def file_format(meta: dict) -> int:
     try:
         return int(meta.get("bridge_format") or 1)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 1
 
 
-def write_text_atomic(path: Path, text: str) -> None:
-    """Write via a temporary file next to it, so a crash never leaves half a file."""
-    tmp = path.with_name(f".{path.name}.tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+def write_file(path: Path, text: str) -> None:
+    """Write into the file itself (through a link, if it is one), so its permissions, Finder tags, creation
+    date and links stay as the user set them. A read-only file raises PermissionError, which callers skip."""
+    path.resolve().write_text(text, encoding="utf-8")
 
 
 # -- Action items -----------------------------------------------------------------

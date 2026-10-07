@@ -2,7 +2,10 @@
 plus the upgrade that rewrites existing files once the reading improves."""
 
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 from pocket_bridge import sync
 from pocket_bridge.index import Index
@@ -438,17 +441,17 @@ def test_upgrade_that_stopped_halfway_can_run_again(settings, monkeypatch):
 
 def test_a_locked_file_does_not_stop_the_sync_or_move_names_twice(settings, monkeypatch):
     path = as_v100(settings, SPK0, labels=["Ian", "Speaker 1"], names={"Speaker 0": "Ian"}, keep_actions=True)
-    real_write = sync.write_text_atomic
+    real_write = sync.write_file
 
     def locked(*a, **k):
         raise PermissionError("in use by OneDrive")
 
-    monkeypatch.setattr(sync, "write_text_atomic", locked)
+    monkeypatch.setattr(sync, "write_file", locked)
     res = sync.run_sync(settings, transport=make_transport({"rec_now": SPK0}))
     assert not res.message.startswith("in use")
     state = sync.load_state(settings)
     assert state["speakers"]["rec_now"] == {"Speaker 0": "Ian"} and state["refetch_ids"] == {"rec_now": 1}
-    monkeypatch.setattr(sync, "write_text_atomic", real_write)
+    monkeypatch.setattr(sync, "write_file", real_write)
     sync.run_sync(settings, transport=make_transport({"rec_now": SPK0}))
     assert turns(path) == [("Ian", "Ik ben persoon A."), ("Speaker 2", "Ik ben persoon B.")]
     sync.run_sync(settings, transport=make_transport({"rec_now": dict(SPK0, updated_at="2026-10-01T09:00:00Z")}), full=True)
@@ -505,3 +508,30 @@ def test_a_deleted_file_that_comes_back_gets_its_names_moved(settings):
     back = next(settings.root.rglob("*Reflective interview.md"))
     assert turns(back) == [("Ian", "Ik ben persoon A."), ("Jan", "Ik ben persoon B.")]
     assert "refetch_ids" not in sync.load_state(settings)
+
+
+def test_names_move_for_a_file_deleted_before_the_upgrade(settings):
+    path = as_v100(settings, SPK0, labels=["Ian", "Jan"], names={"Speaker 0": "Ian", "Speaker 1": "Jan"})
+    path.unlink()
+    sync.upgrade(settings)
+    assert "rec_now" in sync.load_state(settings)["refetch_ids"]
+    sync.run_sync(settings, transport=make_transport({"rec_now": SPK0}), full=True)
+    back = next(settings.root.rglob("*Reflective interview.md"))
+    assert turns(back) == [("Ian", "Ik ben persoon A."), ("Jan", "Ik ben persoon B.")]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks and chmod modes differ on Windows")
+def test_rewrites_keep_the_file_itself(settings, tmp_path):
+    import os
+    import stat
+
+    from pocket_bridge.storage import write_file
+
+    real = tmp_path / "echt.md"
+    real.write_text("oud", encoding="utf-8")
+    os.chmod(real, 0o600)
+    link = tmp_path / "link.md"
+    link.symlink_to(real)
+    write_file(link, "nieuw")
+    assert link.is_symlink() and real.read_text(encoding="utf-8") == "nieuw"
+    assert stat.S_IMODE(real.stat().st_mode) == 0o600

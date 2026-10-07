@@ -37,7 +37,7 @@ from .storage import (
     stamp_format,
     target_path,
     unique_path,
-    write_text_atomic,
+    write_file,
 )
 
 log = logging.getLogger(__name__)
@@ -233,7 +233,7 @@ def _do_sync(settings: Settings, full: bool, say, result: SyncResult, transport,
                 meeting_dict = meeting.as_dict() if hasattr(meeting, "as_dict") else meeting
                 try:
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    write_text_atomic(path, render_markdown(settings, rec, client, source, project, meeting_dict, speakers.get(rid), done_actions))
+                    write_file(path, render_markdown(settings, rec, client, source, project, meeting_dict, speakers.get(rid), done_actions))
                 except OSError as exc:  # a locked file must not stop the other recordings
                     result.errors.append(f"{rec.title}: {exc}")
                     if moved:
@@ -358,8 +358,9 @@ def _apply_upgrade(settings: Settings, state: dict, index: Index, row, rec) -> b
     """Bring one 1.0.0 file in line with what is now read from Pocket. Rewrites it (with a backup) when it
     gains action items or speakers; otherwise only gives speakers nobody named yet today's label
     ("Speaker 0" -> "Speaker 1"), so a name given later is stored under the label the next rewrite uses.
-    Either way the file is stamped with today's format and never touched by the upgrade again. Returns
-    True when rewritten; raises OSError when the file cannot be written."""
+    A file that changes is stamped with today's format and never touched by the upgrade again; a file
+    that needs nothing is left exactly as it is. Returns True when rewritten; raises OSError when the
+    file cannot be written."""
     path = Path(row.path)
     if not rec.has_transcript or not path.exists():
         return False
@@ -376,12 +377,12 @@ def _apply_upgrade(settings: Settings, state: dict, index: Index, row, rec) -> b
         stale = {o: n for o, n in legacy_speaker_labels(rec.raw).items() if o != n and o in on_disk and o not in named}
         if stale:  # headings typed by hand or bold lines in notes are not in `stale` and stay as they are
             text, _ = rename_speakers_in_text(current, stale)
-            write_text_atomic(path, stamp_format(text))
+            write_file(path, stamp_format(text))
             index.upsert_file(path)
         return False
     source, done, meeting = _kept_from_file(path)
     _backup(settings, row.pocket_id, path)
-    write_text_atomic(path, render_markdown(settings, rec, row.client, source, row.project, meeting, names, done))
+    write_file(path, render_markdown(settings, rec, row.client, source, row.project, meeting, names, done))
     index.upsert_file(path)
     return True
 
@@ -439,6 +440,9 @@ def _upgrade_files(settings: Settings, state: dict, index: Index) -> set[str]:
             pending.setdefault(rid, 0)
         elif outcome and row.client:
             touched.add(row.client)
+    for rid, names in state.get("speakers", {}).items():  # named in 1.0.0, file gone: move the names if it comes back
+        if names and _SAFE_ID.fullmatch(rid) and not index.get(rid) and rid not in state.get("names_migrated", []):
+            pending.setdefault(rid, 0)
     state.pop("names_migrated", None)  # every file is done or listed in refetch_ids (names not moved yet)
     if not pending:
         state.pop("refetch_ids", None)
